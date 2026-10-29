@@ -25,8 +25,8 @@ Both projects are scaffolded and the login path is implemented.
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
   middleware, endpoints), `Data/` (EF Core context and entities), `appsettings*.json`.
-- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper), `src/stores/` (Pinia),
-  `src/router/`, `src/views/`.
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper), `src/config/` (runtime
+  config), `src/stores/` (Pinia), `src/router/`, `src/views/`.
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -65,6 +65,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers.
 - The UI is a separate SPA communicating with the API over HTTP and WebSocket. As terminal-session
   and file-operation endpoints are added, keep their contracts documented.
+- Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
+  empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
+  or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
+  `ui/dist/conf/setting.json` to retarget the backend without rebuilding.
 
 ## Knowledge base
 

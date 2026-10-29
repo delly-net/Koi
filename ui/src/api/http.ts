@@ -1,3 +1,5 @@
+import { buildApiUrl } from '@/config/appConfig'
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -35,7 +37,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(buildApiUrl(path), {
     ...init,
     headers,
     credentials: 'include',
