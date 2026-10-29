@@ -82,13 +82,20 @@ public sealed class SessionService(
             .ExecuteDeleteAsync(cancellationToken);
     }
 
-    /// <summary>清理已过期会话。</summary>
+    /// <summary>清理已过期会话。清理属于维护性动作，失败只记录警告，不阻断调用方（登录）。</summary>
     public async Task CleanupExpiredAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        await db.Sessions
-            .Where(x => x.ExpiresAt <= now)
-            .ExecuteDeleteAsync(cancellationToken);
+        try
+        {
+            await db.Sessions
+                .Where(x => x.ExpiresAt <= now)
+                .ExecuteDeleteAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "清理过期会话失败，本次登录继续。");
+        }
     }
 
     public static string GenerateToken()

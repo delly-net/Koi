@@ -82,6 +82,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `conf/setting.json` are served `no-cache`; `/assets/**` gets a one-year immutable cache.
 - Runtime state lives in `api/koi.db` (SQLite, created with `EnsureCreated` — no migrations yet).
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers.
+- The SQLite provider does not translate `DateTimeOffset` comparisons, so `KoiDbContext`
+  maps every `DateTimeOffset` property to UTC ticks (`long`) via `UtcTicksConverter`
+  (`ConfigureConventions`). Do not remove it, and do not add per-property conversions that
+  bypass it. Changing the storage format leaves existing rows unreadable: delete `koi.db`
+  after such a change (sessions are ephemeral and users simply log in again).
 - The UI is a separate SPA communicating with the API over HTTP and WebSocket. As terminal-session
   and file-operation endpoints are added, keep their contracts documented.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,

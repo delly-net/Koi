@@ -7,6 +7,14 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
 {
     public DbSet<SessionEntity> Sessions => Set<SessionEntity>();
 
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+
+        // SQLite 不翻译 DateTimeOffset 比较，统一按 UTC ticks 存储以支持 Where / 排序 / ExecuteDelete。
+        configurationBuilder.Properties<DateTimeOffset>().HaveConversion<UtcTicksConverter>();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
