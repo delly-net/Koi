@@ -50,6 +50,11 @@ To preview the production bundle served by the backend, copy `ui/dist/*` into `a
 run the API (the directory is gitignored). `deploy/linux/ui-build.sh` performs the same copy into
 the publish directory `wwwroot`.
 
+`deploy/linux/publish.sh` copies the publish output into `/opt/delly-net/Koi`; `deploy/linux/install.sh`
+(run as root) registers that directory as the `koi.service` systemd unit — `WorkingDirectory` is the
+program directory so `koi.db` and `wwwroot` resolve there — then enables and starts/restarts it. The
+unit runs as root because `pam_unix` needs privileged access to the account database.
+
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
 TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.
 
