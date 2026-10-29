@@ -14,6 +14,9 @@ public static class TerminalEndpoints
     private const int MinDimension = 1;
     private const int MaxDimension = 1000;
 
+    /// <summary>PTY 读到对端关闭后，等待子进程退出的最长时间。</summary>
+    private const int PtyWaitMs = 1000;
+
     private static readonly JsonSerializerOptions WireJson = new(JsonSerializerDefaults.Web);
 
     public static IEndpointRouteBuilder MapTerminalEndpoints(this IEndpointRouteBuilder app)
@@ -112,15 +115,6 @@ public static class TerminalEndpoints
 
         try
         {
-            // 降权或 exec 失败时子进程会立即退出，早检一次以便返回可读错误。
-            await Task.Delay(150, cancellationToken);
-            if (session.Pty.TryGetExitCode(out var earlyExitCode))
-            {
-                await TrySendAsync(socket, new TerminalErrorMessage("error", DescribeEarlyExit(earlyExitCode)), sendLock, cancellationToken);
-                await TryCloseAsync(socket, WebSocketCloseStatus.InternalServerError, "终端启动失败", cancellationToken);
-                return;
-            }
-
             await TrySendAsync(
                 socket,
                 new TerminalReadyMessage(
@@ -210,7 +204,8 @@ public static class TerminalEndpoints
             }
             finally
             {
-                completion.TrySetResult(session.Pty.TryGetExitCode(out var code) ? code : -1);
+                // 读到对端关闭后给子进程一点时间退出，尽量带回真实退出码（等不到则为 -1）。
+                completion.TrySetResult(session.Pty.WaitForExitCode(PtyWaitMs));
             }
         })
         {
@@ -357,15 +352,6 @@ public static class TerminalEndpoints
         root.TryGetProperty(name, out var value) && value.TryGetInt32(out var number)
             ? Math.Clamp(number, MinDimension, MaxDimension)
             : Math.Clamp(fallback, MinDimension, MaxDimension);
-
-    private static string DescribeEarlyExit(int exitCode) => exitCode switch
-    {
-        PosixPty.SetGidFailedExitCode => "终端进程无法切换到登录用户所属的主组（服务权限不足）。",
-        PosixPty.InitGroupsFailedExitCode => "终端进程无法读取登录用户的补充组（服务权限不足）。",
-        PosixPty.SetUidFailedExitCode => "终端进程无法切换为登录用户身份（服务权限不足）。",
-        PosixPty.ExecFailedExitCode => "登录 shell 启动失败，请检查账号的 shell 是否存在且可执行。",
-        _ => $"终端进程启动后立即退出（退出码 {exitCode}）。",
-    };
 
     private static Task TrySendAsync(WebSocket socket, object message, SemaphoreSlim sendLock, CancellationToken cancellationToken) =>
         SendPayloadAsync(socket, JsonSerializer.SerializeToUtf8Bytes(message, WireJson), sendLock, cancellationToken);

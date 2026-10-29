@@ -21,7 +21,7 @@ public sealed class TerminalSessionManager(
 
     /// <summary>
     /// 在并发上限内创建并登记会话。工厂抛出的异常会被捕获，
-    /// 以可读错误信息返回给调用方（例如降权失败或 forkpty 不可用）。
+    /// 以可读错误信息返回给调用方（例如辅助进程降权失败或平台不支持 PTY）。
     /// </summary>
     public TerminalSession? TryCreate(string userName, Func<TerminalSession> factory, out string? error)
     {

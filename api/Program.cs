@@ -6,6 +6,12 @@ using Koi.Api.Terminal;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 
+// 终端辅助进程模式：必须在构建 Web 宿主之前分流，辅助进程只负责接管 PTY，不启动 Kestrel。
+if (PtyHelper.TryRun(args))
+{
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddProblemDetails();

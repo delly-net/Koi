@@ -28,7 +28,8 @@ Both projects are scaffolded and the login path is implemented.
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
   middleware, endpoints), `Data/` (EF Core context and entities), `Hosting/` (frontend static
-  files and SPA fallback), `Terminal/` (PTY P/Invoke, session registry, WebSocket endpoint),
+  files and SPA fallback), `Terminal/` (PTY P/Invoke, privileged helper process, session registry,
+  WebSocket endpoint),
   `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper and terminal protocol types),
   `src/config/` (runtime config), `src/stores/` (Pinia), `src/router/`, `src/views/`,
@@ -76,16 +77,36 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - Same-origin enforcement runs on unsafe HTTP methods; additional origins come from
   `Koi:Auth:AllowedOrigins` (Development allows the Vite dev server). WebSocket handshakes are GET
   requests and must call `SameOriginMiddleware.IsAllowedOrigin` themselves.
-- Terminal child processes drop privileges: `initgroups` → `setgid` → `setuid` to the logged-in
-  account before `execve`, so terminals never inherit the service account. All strings and pointer
-  arrays are marshalled before `fork`; the child branch calls only async-signal-safe libc functions
-  and never touches managed state.
+- Never `fork` a managed process on Linux. After `fork` the .NET runtime keeps only the calling
+  thread (GC, threadpool, diagnostics are gone), so any managed code — including the P/Invoke
+  return trampoline — may fault, which showed up as SIGSEGV (exit code 139) when the PTY child was
+  created with `forkpty` from managed code. Ordering or pre-warming does not make it safe. Terminal
+  children are therefore created by `Process.Start` (native fork/exec):
+  - the main process allocates the PTY master with `posix_openpt` + `grantpt` + `unlockpt` +
+    `ptsname_r`, marks the master `FD_CLOEXEC`, and sets the initial `TIOCSWINSZ`;
+  - it then re-launches *this same binary* with the hidden first argument `--koi-pty-helper`
+    (`PtyHelper.ArgumentName`), passing slave path, uid, gid, user name, home and the shell
+    command line. `Program.cs` diverts on that argument before `WebApplication.CreateBuilder`, so
+    the helper never starts Kestrel;
+  - the helper (a normal, unforked .NET process) opens the slave, `setsid`, `TIOCSCTTY`, drops
+    privileges (`initgroups` → `setgid` → `setuid`, `initgroups` strictly before `setuid`),
+    `chdir`s home, checks `access(shell, X_OK)`, writes one readiness byte (`PtyHelper.ReadyByte`)
+    to the redirected stdout, `dup2`s the slave onto fds 0/1/2, restores `SIGPIPE` and the signal
+    mask, then `execve`s the shell with a clean environment;
+  - the parent waits up to 5 s for the readiness byte. No byte means failure: the helper exits
+    with a documented code (`PtyHelper.*FailedExitCode`: 111 setgid, 112 initgroups, 113 setuid,
+    120 slave open, 121 setsid, 122 dup2, 127 exec) which is mapped to a Chinese message.
+  Consequences to preserve: the helper must keep running as the service account (uid/gid drop
+  requires privilege); `export DOTNET_EnableDiagnostics=0` is set for the helper; exit status and
+  reaping come from `System.Diagnostics.Process` (`HasExited` / `ExitCode` / `WaitForExit`) rather
+  than `waitpid`, so do not reintroduce `waitpid` or `_exit` in the parent.
 - Terminal sessions live in memory (`TerminalSessionManager`): disconnecting destroys the PTY and
   child, logout closes that user's terminals, host shutdown reaps them all. Concurrency is capped by
   `Koi:Terminal:MaxSessionsPerUser` / `MaxSessionsTotal`. Config keys: `Koi:Terminal:Enabled`,
   `Shell` (empty = account login shell), `ShellArguments`, `MaxInputBytes`, `DefaultCols`,
   `DefaultRows`, `CloseTimeoutSeconds`. `PosixPty` relies on `AllowUnsafeBlocks` (only that file
-  uses pointers) and resolves `forkpty` from libc/libutil at runtime.
+  uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
+  no `forkpty`, no libutil, no C toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable`),
   `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
