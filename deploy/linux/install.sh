@@ -7,7 +7,7 @@ set -euo pipefail
 KOI_HOME="/opt/delly-net/Koi"
 SERVICE_NAME="koi"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-EXECUTABLE="${KOI_HOME}/Koi.Api"
+EXECUTABLE="${KOI_HOME}/koi"
 
 echo "[==========检查运行环境==========]"
 if [ "$(id -u)" -ne 0 ]; then
