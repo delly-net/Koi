@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Koi.Api</RootNamespace>
     <AssemblyName>koi</AssemblyName>
+    <!-- PTY 读写需要 byte* 指针，仅 Terminal/PosixPty.cs 使用。 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

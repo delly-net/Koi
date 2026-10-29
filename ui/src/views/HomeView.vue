@@ -31,15 +31,15 @@ async function handleLogout(): Promise<void> {
     <el-main class="main">
       <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
         <template #extra>
-          <p class="hint">基础框架已就绪，终端与文件功能将在后续任务中接入。</p>
+          <p class="hint">终端能力已接入，文件管理将在后续任务中提供。</p>
         </template>
       </el-result>
 
       <div class="modules">
         <el-card class="module-card" shadow="hover">
           <template #header>在线终端</template>
-          <p>多终端会话能力（PTY + WebSocket）规划中。</p>
-          <el-button disabled>敬请期待</el-button>
+          <p>多终端会话，基于 Linux PTY 与 WebSocket，以登录用户身份运行。</p>
+          <el-button type="primary" @click="router.push({ name: 'terminal' })">打开终端</el-button>
         </el-card>
 
         <el-card class="module-card" shadow="hover">

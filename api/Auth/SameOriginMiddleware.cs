@@ -41,7 +41,11 @@ public sealed class SameOriginMiddleware(RequestDelegate next)
         await next(context);
     }
 
-    private static bool IsAllowedOrigin(HttpContext context, string origin, string[] allowedOrigins)
+    /// <summary>
+    /// 判断来源是否被允许：同源或命中配置白名单。
+    /// 公开给 WebSocket 终端端点复用（握手是 GET，不经本中间件的非安全方法校验）。
+    /// </summary>
+    public static bool IsAllowedOrigin(HttpContext context, string origin, string[] allowedOrigins)
     {
         var requestOrigin = $"{context.Request.Scheme}://{context.Request.Host.Value}";
         if (string.Equals(origin, requestOrigin, StringComparison.OrdinalIgnoreCase))

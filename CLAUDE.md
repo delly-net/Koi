@@ -16,19 +16,23 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 Both projects are scaffolded and the login path is implemented.
 
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
-  storage, PAM-backed system account authentication, HttpOnly session cookie, health check, and
-  static hosting of the built SPA from `wwwroot` with history-mode fallback.
+  storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
+  PTY-backed online terminal over WebSocket, and static hosting of the built SPA from `wwwroot`
+  with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
-  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell.
+  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell, and a
+  multi-tab xterm.js terminal page.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 ## Layout
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
   middleware, endpoints), `Data/` (EF Core context and entities), `Hosting/` (frontend static
-  files and SPA fallback), `appsettings*.json`.
-- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper), `src/config/` (runtime
-  config), `src/stores/` (Pinia), `src/router/`, `src/views/`.
+  files and SPA fallback), `Terminal/` (PTY P/Invoke, session registry, WebSocket endpoint),
+  `appsettings*.json`.
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper and terminal protocol types),
+  `src/config/` (runtime config), `src/stores/` (Pinia), `src/router/`, `src/views/`,
+  `src/components/terminal/` (xterm.js pane).
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -53,7 +57,8 @@ the publish directory `wwwroot`.
 `deploy/linux/publish.sh` copies the publish output into `/opt/delly-net/Koi`; `deploy/linux/install.sh`
 (run as root) registers that directory as the `koi.service` systemd unit — `WorkingDirectory` is the
 program directory so `koi.db` and `wwwroot` resolve there — then enables and starts/restarts it. The
-unit runs as root because `pam_unix` needs privileged access to the account database.
+unit runs as root because `pam_unix` needs privileged access to the account database; terminal
+children do not inherit it — they drop to the logged-in user inside the PTY.
 
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
 TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.
@@ -69,10 +74,28 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - Session model: HttpOnly cookie (`koi_session`, `SameSite=Lax`) + server-side session in SQLite.
   Only the SHA-256 hash of the token is stored. WebSocket endpoints must reuse this session check.
 - Same-origin enforcement runs on unsafe HTTP methods; additional origins come from
-  `Koi:Auth:AllowedOrigins` (Development allows the Vite dev server).
-- API contract: `GET /api/health`, `POST /api/auth/login`, `POST /api/auth/logout`,
-  `GET /api/auth/me`; errors use ProblemDetails. Unmatched `/api/**` paths return a 404
-  ProblemDetails and never fall back to the SPA.
+  `Koi:Auth:AllowedOrigins` (Development allows the Vite dev server). WebSocket handshakes are GET
+  requests and must call `SameOriginMiddleware.IsAllowedOrigin` themselves.
+- Terminal child processes drop privileges: `initgroups` → `setgid` → `setuid` to the logged-in
+  account before `execve`, so terminals never inherit the service account. All strings and pointer
+  arrays are marshalled before `fork`; the child branch calls only async-signal-safe libc functions
+  and never touches managed state.
+- Terminal sessions live in memory (`TerminalSessionManager`): disconnecting destroys the PTY and
+  child, logout closes that user's terminals, host shutdown reaps them all. Concurrency is capped by
+  `Koi:Terminal:MaxSessionsPerUser` / `MaxSessionsTotal`. Config keys: `Koi:Terminal:Enabled`,
+  `Shell` (empty = account login shell), `ShellArguments`, `MaxInputBytes`, `DefaultCols`,
+  `DefaultRows`, `CloseTimeoutSeconds`. `PosixPty` relies on `AllowUnsafeBlocks` (only that file
+  uses pointers) and resolves `forkpty` from libc/libutil at runtime.
+- API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable`),
+  `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`;
+  errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
+  back to the SPA.
+- Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
+  `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
+  sends `ready` (sessionId/userName/pid/cols/rows), `output` (UTF-8 decoded text), `exit` (code),
+  `error` (message) and `pong`. Authentication is the session cookie (401); the handshake is then
+  Origin-checked explicitly (403) because it is a GET and therefore bypasses
+  `SameOriginMiddleware`; non-Linux or disabled returns 503.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
   content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is

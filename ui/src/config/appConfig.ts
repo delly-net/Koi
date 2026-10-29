@@ -60,6 +60,25 @@ export function buildApiUrl(path: string): string {
 }
 
 /**
+ * 由 HTTP 路径推导 WebSocket 地址：
+ *   "wss://host/path" 原样返回；"https://host/path" 转为 wss；
+ *   同源相对路径按当前页面协议与主机补全（http → ws，https → wss）。
+ */
+export function buildWebSocketUrl(path: string): string {
+  if (/^wss?:\/\//i.test(path)) {
+    return path
+  }
+
+  const url = buildApiUrl(path)
+  if (/^https?:\/\//i.test(url)) {
+    return url.replace(/^http/i, 'ws')
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}${url.startsWith('/') ? url : `/${url}`}`
+}
+
+/**
  * 加载配置文件并应用 baseUrl。
  * 加载失败、状态码非 2xx、字段缺失或类型不符时仅告警，保持同源默认值继续启动。
  */

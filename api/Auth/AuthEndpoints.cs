@@ -1,4 +1,5 @@
 using Koi.Api.Data;
+using Koi.Api.Terminal;
 using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Auth;
@@ -110,6 +111,7 @@ public static class AuthEndpoints
     private static async Task<IResult> LogoutAsync(
         HttpContext context,
         SessionService sessions,
+        TerminalSessionManager terminals,
         IOptions<AuthOptions> options,
         CancellationToken cancellationToken)
     {
@@ -118,6 +120,12 @@ public static class AuthEndpoints
             !string.IsNullOrWhiteSpace(token))
         {
             await sessions.RevokeAsync(token, cancellationToken);
+        }
+
+        // 会话吊销后已建立的 WebSocket 不会自动断开，退出登录时显式回收该用户的终端。
+        if (context.User.Identity?.Name is { Length: > 0 } userName)
+        {
+            terminals.CloseAllForUser(userName);
         }
 
         context.Response.Cookies.Delete(cookieName, BuildCookieOptions(context, null));

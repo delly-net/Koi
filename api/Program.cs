@@ -2,6 +2,7 @@ using System.Threading.RateLimiting;
 using Koi.Api.Auth;
 using Koi.Api.Data;
 using Koi.Api.Hosting;
+using Koi.Api.Terminal;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,8 +28,11 @@ builder.Services.AddDbContext<KoiDbContext>(options =>
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 builder.Services.Configure<KoiStaticFilesOptions>(
     builder.Configuration.GetSection(KoiStaticFilesOptions.SectionName));
+builder.Services.Configure<TerminalOptions>(
+    builder.Configuration.GetSection(TerminalOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
+builder.Services.AddSingleton<TerminalSessionManager>();
 
 var authOptions = builder.Configuration
     .GetSection(AuthOptions.SectionName)
@@ -85,15 +89,23 @@ app.UseMiddleware<SameOriginMiddleware>();
 app.UseRateLimiter();
 app.UseMiddleware<SessionAuthenticationMiddleware>();
 
+// 在线终端：KeepAlive 用于探测半开连接，端点自身完成会话校验与来源校验。
+app.UseWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30),
+});
+
 app.MapGet("/api/health", () => Results.Ok(new
 {
     status = "ok",
     platform = OperatingSystem.IsLinux() ? "linux" : "other",
     pamAvailable = OperatingSystem.IsLinux(),
+    terminalAvailable = OperatingSystem.IsLinux(),
     timestamp = DateTimeOffset.UtcNow,
 }));
 
 app.MapAuthEndpoints();
+app.MapTerminalEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();
