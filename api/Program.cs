@@ -1,6 +1,7 @@
 using System.Threading.RateLimiting;
 using Koi.Api.Auth;
 using Koi.Api.Data;
+using Koi.Api.Hosting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +25,8 @@ builder.Services.AddDbContext<KoiDbContext>(options =>
     options.UseSqlite($"Data Source={databasePath}"));
 
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
+builder.Services.Configure<KoiStaticFilesOptions>(
+    builder.Configuration.GetSection(KoiStaticFilesOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 
@@ -74,6 +77,10 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 });
 
 app.UseExceptionHandler();
+
+// 静态文件先于认证中间件短路，避免前端资源请求触发会话查询。
+app.UseKoiStaticFiles();
+
 app.UseMiddleware<SameOriginMiddleware>();
 app.UseRateLimiter();
 app.UseMiddleware<SessionAuthenticationMiddleware>();
@@ -87,6 +94,9 @@ app.MapGet("/api/health", () => Results.Ok(new
 }));
 
 app.MapAuthEndpoints();
+
+// /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
+app.MapKoiFallbacks();
 
 app.Run();
 
