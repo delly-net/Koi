@@ -6,7 +6,6 @@ set -euo pipefail
 
 KOI_HOME="/opt/delly-net/Koi"
 SERVICE_NAME="koi"
-SERVICE_NAME="${SERVICE_NAME}.service"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 EXECUTABLE="${KOI_HOME}/Koi.Api"
 
