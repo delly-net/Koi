@@ -13,47 +13,58 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 
 ## Repository state
 
-The repository is currently a **skeleton**. It contains `README.md`, `LICENSE`, `icon/`, and the
-`api/` and `ui/` directories; `api/` and `ui/` hold only their `.gitignore` files. There is no
-solution, project file, or package manifest yet — verify what has actually been scaffolded before
-assuming any build command works.
+Both projects are scaffolded and the login path is implemented.
 
-## Planned layout
+- `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
+  storage, PAM-backed system account authentication, HttpOnly session cookie, health check.
+- `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
+  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell.
+- `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
-- `api/` — backend, ASP.NET Core Minimal API on .NET 10
-- `ui/` — frontend, Vue 3 + TypeScript + Element Plus (Vite-based, per `ui/.gitignore`)
-- `icon/` — application icons (48 / 256 / full size)
+## Layout
+
+- `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
+  middleware, endpoints), `Data/` (EF Core context and entities), `appsettings*.json`.
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper), `src/stores/` (Pinia),
+  `src/router/`, `src/views/`.
+- `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
-
-No project-specific scripts exist yet. Once the projects are scaffolded, the conventional entry
-points will be:
 
 Backend, from `api/`:
 
 - `dotnet build`
-- `dotnet run` (or `dotnet run --project <api>.csproj` from the repo root)
-- `dotnet test`
+- `dotnet run` — uses `Properties/launchSettings.json` (Development, `http://localhost:5000`)
+- `dotnet test` — no test project yet
 
 Frontend, from `ui/`:
 
 - `npm install`
-- `npm run dev`
-- `npm run build`
-
-Check `package.json` once it exists for the actual script names (including tests).
+- `npm run dev` — Vite on port 5173, proxies `/api` to `http://127.0.0.1:5000`
+- `npm run build` — runs `vue-tsc -b` then `vite build`, output in `ui/dist`
+- `npm run preview`
 
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
+TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.
 
 ## Architecture constraints
 
-- The target platform is Linux. Login verifies against the Linux system account database and the
-  terminal feature needs PTYs (POSIX), so those paths cannot be fully exercised on the Windows 11
-  dev machine — verify them on a Linux host.
+- The target platform is Linux. Login verifies against PAM via P/Invoke (`libpam.so.0`); on other
+  platforms the login endpoint returns `503`. The terminal feature needs PTYs (POSIX), so those
+  paths cannot be fully exercised on the Windows 11 dev machine — verify them on a Linux host.
+- `pam_unix` generally needs privileges to read the system account database (root or a setuid
+  helper). Deployment must grant controlled access to the service account; do not run the backend
+  as root by default.
+- Session model: HttpOnly cookie (`koi_session`, `SameSite=Lax`) + server-side session in SQLite.
+  Only the SHA-256 hash of the token is stored. WebSocket endpoints must reuse this session check.
+- Same-origin enforcement runs on unsafe HTTP methods; additional origins come from
+  `Koi:Auth:AllowedOrigins` (Development allows the Vite dev server).
+- API contract: `GET /api/health`, `POST /api/auth/login`, `POST /api/auth/logout`,
+  `GET /api/auth/me`; errors use ProblemDetails.
+- Runtime state lives in `api/koi.db` (SQLite, created with `EnsureCreated` — no migrations yet).
+  The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers.
 - The UI is a separate SPA communicating with the API over HTTP and WebSocket. As terminal-session
   and file-operation endpoints are added, keep their contracts documented.
-- `api/.gitignore` already excludes a SQLite database (`hamster.db`), indicating local persistence
-  of runtime state is planned.
 
 ## Knowledge base
 

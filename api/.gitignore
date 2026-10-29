@@ -367,3 +367,8 @@ Generated/
 hamster.db
 hamster.db-shm
 hamster.db-wal
+
+# Koi SQLite 数据库（运行期生成，不入库）
+koi.db
+koi.db-shm
+koi.db-wal
