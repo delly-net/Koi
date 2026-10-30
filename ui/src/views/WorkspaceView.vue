@@ -60,6 +60,9 @@ async function handleLogout(): Promise<void> {
         <span class="title">Koi Linux Web UI</span>
       </div>
 
+      <!-- 品牌区与页签区的分隔竖线：1px 浅灰、左右各 20px 间距 -->
+      <span class="brand-divider" aria-hidden="true" />
+
       <!-- 一级标签嵌入 logo 栏：这里只保留导航头，面板在下方 .panels 中挂载 -->
       <el-tabs v-model="activeKey" class="header-tabs" @tab-remove="onTabRemove">
         <el-tab-pane
@@ -99,15 +102,24 @@ async function handleLogout(): Promise<void> {
   background: #f5f7fa;
 }
 
+/* 不使用 gap：分隔竖线与用户区的间距由各自外边距精确给出，避免与 gap 叠加 */
 .header {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 16px;
   height: 56px;
   padding: 0 12px;
   background: #ffffff;
   border-bottom: 1px solid #e4e7ed;
+}
+
+/* 品牌区与页签区之间的 1px 竖线，24px 高随 flex 垂直居中，左右各 20px */
+.brand-divider {
+  flex: none;
+  width: 1px;
+  height: 24px;
+  margin: 0 20px;
+  background: #e4e7ed;
 }
 
 .brand {
@@ -165,6 +177,8 @@ async function handleLogout(): Promise<void> {
   flex: none;
   align-items: center;
   gap: 8px;
+  /* 顶栏已取消 gap，这里补回页签区与用户区之间的 16px 间距 */
+  margin-left: 16px;
 }
 
 .panels {

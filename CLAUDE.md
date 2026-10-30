@@ -210,7 +210,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - Frontend layout: after login the app is a single workspace shell (`views/WorkspaceView.vue`,
   route `/`) whose top bar owns the logo + title, the panel tabs and the user name + logout, so the
   tab row no longer takes a separate line and the content area gains its height. The tabs are flat
-  (non-card) text tabs inside that bar. The `el-tabs` there is navigation only — its panes are
+  (non-card) text tabs inside that bar. A 1px, 24px-tall `#e4e7ed` divider (`.brand-divider`) sits
+  between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
+  flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
+  The `el-tabs` there is navigation only — its panes are
   empty and `.el-tabs__content` is hidden; the four modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
