@@ -148,8 +148,19 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   timeout. Listing is capped by `MaxListEntries` and reports `truncated`.
 - File config keys: `Koi:Files:Enabled`, `AllowedRoots`, `MaxUploadBytes` (default 100 MiB;
   `Program.cs` raises the Kestrel request-body limit and `FormOptions.MultipartBodyLengthLimit`
-  accordingly), `MaxListEntries`, `HelperTimeoutSeconds`. Uploads are written to a temp file in the
-  destination directory and renamed into place, so an interrupted upload leaves no partial target.
+  accordingly), `MaxListEntries`, `HelperTimeoutSeconds` (metadata ops, 120 s),
+  `ListTimeoutSeconds` (directory listing, 300 s), `TransferTimeoutSeconds` (delete/copy/move,
+  1800 s), `StreamIdleTimeoutSeconds` (upload/download with no data flowing, 120 s) and
+  `StreamMaxSeconds` (upload/download total cap, 0 = unlimited). Uploads are written to a temp file
+  in the destination directory and renamed into place, so an interrupted upload leaves no partial
+  target.
+- File helper framing has two separate limits: requests (main → helper) are capped at 64 KiB,
+  responses (helper → main) at 32 MiB because a directory listing carries every entry in one JSON
+  frame. Never stop reading a frame without terminating the helper: if the parent rejects an
+  oversized length and simply waits for exit, the helper blocks writing the unread payload into the
+  pipe and the operation only "finishes" when the timeout fires (this used to surface as a spurious
+  504 when loading directories with a few hundred entries). Upload and download timeouts are
+  idle-based and re-armed on every chunk, so a slow but active client is not killed by a wall clock.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
   content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is

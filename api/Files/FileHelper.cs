@@ -61,7 +61,7 @@ public static class FileHelper
         {
             request = await FileProtocol.ReadRequestAsync(input, CancellationToken.None);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or FileProtocolException)
         {
             request = null;
         }

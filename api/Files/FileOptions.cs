@@ -17,6 +17,24 @@ public sealed class FileOptions
     /// <summary>单次目录列举返回的最大条目数。</summary>
     public int MaxListEntries { get; set; } = 5000;
 
-    /// <summary>单次文件辅助进程调用的超时时间（秒）。</summary>
+    /// <summary>普通元数据操作（新建目录/新建文件/重命名）的超时时间（秒）。</summary>
     public int HelperTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// 目录列举的超时时间（秒）。大目录逐条目读取属性在慢盘或网络文件系统上可能较慢，
+    /// 因此单独配置且默认值高于普通元数据操作。
+    /// </summary>
+    public int ListTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>删除/复制/移动（含递归与跨文件系统回退）的超时时间（秒）。</summary>
+    public int TransferTimeoutSeconds { get; set; } = 1800;
+
+    /// <summary>上传/下载在没有任何数据流动时允许的最长空闲时间（秒）。</summary>
+    public int StreamIdleTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// 上传/下载的总时长上限（秒）；<c>0</c> 表示不限制，仅依靠空闲超时兜底。
+    /// 慢速客户端在持续有数据流动时不应被固定墙钟误杀。
+    /// </summary>
+    public int StreamMaxSeconds { get; set; }
 }

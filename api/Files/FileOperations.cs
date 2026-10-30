@@ -138,7 +138,7 @@ public static class FileOperations
         var entries = new List<FileEntryInfo>(Math.Min(limit, 512));
         var truncated = false;
 
-        foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+        foreach (var entry in new DirectoryInfo(path).EnumerateFileSystemInfos())
         {
             if (entries.Count >= limit)
             {
@@ -414,21 +414,37 @@ public static class FileOperations
         return FileHelperResponse.Success();
     }
 
-    private static FileEntryInfo Describe(string path)
+    private static FileEntryInfo Describe(FileSystemInfo info)
     {
-        var name = Path.GetFileName(path);
-        var attributes = File.GetAttributes(path);
+        var path = info.FullName;
+
+        FileAttributes attributes;
+        try
+        {
+            // Attributes / Length / LastWriteTimeUtc / UnixFileMode 复用同一次 lstat 结果，
+            // 避免旧实现对每个条目重复 stat（慢盘或网络文件系统上差异显著）。
+            attributes = info.Attributes;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            attributes = FileAttributes.Normal;
+        }
+
         var isSymlink = attributes.HasFlag(FileAttributes.ReparsePoint);
 
-        // Directory.Exists 会跟随符号链接：指向目录的链接按目录处理，便于前端继续导航。
-        var isDirectory = Directory.Exists(path);
+        // 非符号链接直接使用枚举结果的类型；符号链接才额外跟随目标判断是否为目录。
+        var isDirectory = (attributes & FileAttributes.Directory) != 0;
+        if (isSymlink)
+        {
+            isDirectory = Directory.Exists(path);
+        }
 
         long size = 0;
-        if (!isDirectory)
+        if (!isDirectory && info is FileInfo fileInfo)
         {
             try
             {
-                size = new FileInfo(path).Length;
+                size = fileInfo.Length;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -439,7 +455,7 @@ public static class FileOperations
         long modifiedAt = 0;
         try
         {
-            modifiedAt = new DateTimeOffset(File.GetLastWriteTimeUtc(path)).ToUnixTimeMilliseconds();
+            modifiedAt = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -449,14 +465,14 @@ public static class FileOperations
         string mode;
         try
         {
-            mode = FormatMode(File.GetUnixFileMode(path), isDirectory);
+            mode = FormatMode(info.UnixFileMode, isDirectory);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             mode = string.Empty;
         }
 
-        return new FileEntryInfo(name, path, isDirectory, isSymlink, size, modifiedAt, mode);
+        return new FileEntryInfo(info.Name, path, isDirectory, isSymlink, size, modifiedAt, mode);
     }
 
     private static string FormatMode(UnixFileMode mode, bool isDirectory)

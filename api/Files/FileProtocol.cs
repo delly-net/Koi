@@ -98,8 +98,15 @@ public sealed record FileHelperResponse
 /// </summary>
 public static class FileProtocol
 {
-    /// <summary>头部最大字节数，防止恶意超长 JSON 撑爆内存。</summary>
-    public const int MaxHeaderBytes = 64 * 1024;
+    /// <summary>请求帧（主进程 → 辅助进程）头部最大字节数，防止超长 JSON 撑爆内存。</summary>
+    public const int MaxRequestHeaderBytes = 64 * 1024;
+
+    /// <summary>
+    /// 响应帧（辅助进程 → 主进程）头部最大字节数。
+    /// 目录列举把全部条目放进同一个 JSON 帧，默认 5000 条即可超过 64 KiB，
+    /// 因此响应上限必须显著大于请求上限。
+    /// </summary>
+    public const int MaxResponseHeaderBytes = 32 * 1024 * 1024;
 
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -121,7 +128,7 @@ public static class FileProtocol
         Stream stream,
         CancellationToken cancellationToken)
     {
-        var json = await ReadFramedJsonAsync(stream, cancellationToken);
+        var json = await ReadFramedJsonAsync(stream, MaxRequestHeaderBytes, cancellationToken);
         if (json is null)
         {
             return null;
@@ -147,7 +154,7 @@ public static class FileProtocol
         Stream stream,
         CancellationToken cancellationToken)
     {
-        var json = await ReadFramedJsonAsync(stream, cancellationToken);
+        var json = await ReadFramedJsonAsync(stream, MaxResponseHeaderBytes, cancellationToken);
         if (json is null)
         {
             return null;
@@ -197,7 +204,10 @@ public static class FileProtocol
         await stream.FlushAsync(cancellationToken);
     }
 
-    private static async Task<byte[]?> ReadFramedJsonAsync(Stream stream, CancellationToken cancellationToken)
+    private static async Task<byte[]?> ReadFramedJsonAsync(
+        Stream stream,
+        int maxBytes,
+        CancellationToken cancellationToken)
     {
         var header = new byte[4];
         if (!await TryReadExactlyAsync(stream, header, cancellationToken))
@@ -206,15 +216,25 @@ public static class FileProtocol
         }
 
         var length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        if (length <= 0 || length > MaxHeaderBytes)
+        if (length <= 0)
         {
             return null;
+        }
+
+        if (length > maxBytes)
+        {
+            // 超限时不能继续读取负载：调用方必须立即终止子进程，
+            // 否则子进程仍会向写满的管道写入并永久阻塞，表现为「等待退出直到超时」。
+            throw new FileProtocolException($"帧长度 {length} 超过上限 {maxBytes} 字节。");
         }
 
         var json = new byte[length];
         return await TryReadExactlyAsync(stream, json, cancellationToken) ? json : null;
     }
 }
+
+/// <summary>帧格式错误：长度非法或超过允许的上限。</summary>
+public sealed class FileProtocolException(string message) : Exception(message);
 
 /// <summary>文件操作失败（携带协议错误码）。</summary>
 public sealed class FileOperationException(string code, string message) : Exception(message)
