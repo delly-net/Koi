@@ -2,9 +2,16 @@
  * 应用运行时配置：由 public/conf/setting.json 提供，构建后可直接修改以切换后端地址，
  * 无需重新构建前端。配置在 main.ts 中先于路由安装加载。
  */
+export interface FileAssociationsConfig {
+  /** 按文本方式打开的扩展名/文件名规则；由系统配置提供。 */
+  text?: unknown
+}
+
 export interface AppConfig {
   /** 后端对外根地址（不含 /api）；空串表示同源。 */
   baseUrl?: string
+  /** 文件关联信息：决定哪些文件可通过【打开】/【编辑文本】进入在线编辑。 */
+  fileAssociations?: FileAssociationsConfig
 }
 
 /** 配置文件通过 HTTP 直接访问，不参与打包。 */
@@ -14,7 +21,71 @@ const DEFAULT_BACKEND_ROOT = ''
 /** 后端业务端点统一前缀（与 api/auth.ts 中的请求路径一致）。 */
 const API_PREFIX = '/api'
 
+/**
+ * 未提供有效 fileAssociations.text 时使用的内置文本关联规则。
+ * 部署配置（ui/public/conf 与 deploy/linux/conf）应显式列出，这里是启动兜底。
+ */
+const DEFAULT_TEXT_EXTENSIONS = [
+  '.txt',
+  '.md',
+  '.markdown',
+  '.log',
+  '.csv',
+  '.tsv',
+  '.json',
+  '.jsonc',
+  '.xml',
+  '.yml',
+  '.yaml',
+  '.ini',
+  '.conf',
+  '.cfg',
+  '.properties',
+  '.toml',
+  '.env',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.fish',
+  '.py',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.vue',
+  '.html',
+  '.htm',
+  '.css',
+  '.scss',
+  '.less',
+  '.sql',
+  '.java',
+  '.c',
+  '.h',
+  '.cpp',
+  '.hpp',
+  '.cs',
+  '.go',
+  '.rs',
+  '.php',
+  '.rb',
+  '.pl',
+  '.lua',
+  '.service',
+  '.timer',
+  '.desktop',
+  '.dockerfile',
+  '.gitignore',
+  '.gitattributes',
+  '.editorconfig',
+  'dockerfile',
+  'makefile',
+]
+
 let backendRoot = DEFAULT_BACKEND_ROOT
+let textExtensions: string[] = [...DEFAULT_TEXT_EXTENSIONS]
 
 /**
  * 归一化后端根地址，统一为「不含 /api 的根地址」：
@@ -49,6 +120,58 @@ export function setBaseUrl(url: string): void {
 /** 获取后端根地址（不含 /api），供 WebSocket、静态资源等根路径端点复用。 */
 export function getBackendRoot(): string {
   return backendRoot
+}
+
+/** 当前生效的文本文件关联规则（副本，避免调用方修改内部状态）。 */
+export function getTextExtensions(): string[] {
+  return [...textExtensions]
+}
+
+/** 规范化文件关联规则：去空白、转小写、去重；非数组返回 null。 */
+export function normalizeExtensions(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) {
+    return null
+  }
+
+  const result: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      continue
+    }
+
+    const value = item.trim().toLowerCase()
+    if (value && !result.includes(value)) {
+      result.push(value)
+    }
+  }
+
+  return result
+}
+
+/** 应用文本文件关联规则（空数组表示不把任何文件视为文本）。 */
+export function setTextExtensions(rules: string[]): void {
+  textExtensions = [...rules]
+  console.info(`[配置] 文本文件关联：${textExtensions.length} 条规则`)
+}
+
+/**
+ * 判断文件名或路径是否属于配置中的文本类型。
+ * 以 `.` 开头的规则按「完整文件名或扩展名后缀」匹配（支持 `.gitignore`、`.tar.gz`）；
+ * 其余规则按「完整文件名或 `.<规则>` 后缀」匹配（支持 `dockerfile`、`makefile`）。
+ */
+export function isTextFile(nameOrPath: string): boolean {
+  const name = nameOrPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? ''
+  if (!name) {
+    return false
+  }
+
+  return textExtensions.some((rule) => {
+    if (rule.startsWith('.')) {
+      return name === rule || name.endsWith(rule)
+    }
+
+    return name === rule || name.endsWith(`.${rule}`)
+  })
 }
 
 /** 统一拼接请求地址：绝对 URL 原样返回，其余路径前置后端根地址。 */
@@ -94,6 +217,13 @@ export async function loadAppConfig(): Promise<void> {
       setBaseUrl(config.baseUrl)
     } else {
       console.warn(`[配置] ${CONFIG_URL} 中 baseUrl 不是字符串，使用同源默认值`)
+    }
+
+    const textRules = normalizeExtensions(config.fileAssociations?.text)
+    if (textRules) {
+      setTextExtensions(textRules)
+    } else {
+      console.warn(`[配置] ${CONFIG_URL} 未提供有效的 fileAssociations.text，使用内置文本关联`)
     }
   } catch (error) {
     console.warn(`[配置] 加载 ${CONFIG_URL} 失败，使用同源默认值：`, error)

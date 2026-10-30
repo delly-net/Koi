@@ -13,21 +13,25 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 
 ## Repository state
 
-Both projects are scaffolded, and login, online terminals and file management are implemented.
+Both projects are scaffolded, and login, online terminals, file management and online text editing
+are implemented.
 
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
-  PTY-backed online terminal over WebSocket, privilege-dropping file management over REST, and
-  static hosting of the built SPA from `wwwroot` with history-mode fallback.
+  PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
+  read/write over REST, and static hosting of the built SPA from `wwwroot` with history-mode
+  fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
-  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell, a
-  multi-tab xterm.js terminal page, and a file manager page.
+  `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
+  multi-tab xterm.js terminal page, a file manager page and a multi-tab text editor page.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
-(open / download / rename / copy / cut / delete) into a single `操作` dropdown per row, so the
-action column stays narrow. Directories are opened by clicking the entry name or choosing `打开`;
-files are not openable and are downloaded via `下载` (double-click no longer opens entries).
+(open / edit / download / rename / copy / cut / delete) into a single `操作` dropdown per row, so
+the action column stays narrow. Directories are opened by clicking the entry name or choosing
+`打开`; files listed in the configured text associations are opened in the text editor by clicking
+the name or choosing `打开` / `编辑文本`; other files are downloaded via `下载` (double-click no
+longer opens entries).
 
 ## Layout
 
@@ -37,7 +41,8 @@ files are not openable and are downloaded via `下载` (double-click no longer o
   WebSocket endpoint), `Files/` (path validation, file helper process, operation service, REST
   endpoints), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
-  types), `src/config/` (runtime config), `src/stores/` (Pinia), `src/router/`, `src/views/`,
+  types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth
+  and editor tab state), `src/router/`, `src/views/` (file manager and `EditorView.vue`),
   `src/components/terminal/` (xterm.js pane).
 - `icon/` — application icons (48 / 256 / full size).
 
@@ -127,8 +132,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   the service runs as root for PAM, so the main process must never read or write user files
   itself. The parent launches the same binary with `Process.Start` (never `fork`), writes one
   framed request (4-byte little-endian length + UTF-8 JSON header) to stdin, and reads one framed
-  response from stdout; uploads append the raw file bytes to stdin after the header, downloads
-  append the raw file bytes to stdout after the header. The helper reads the request, then runs
+  response from stdout; uploads (`upload`, `writetext`) append the raw file bytes to stdin after
+  the header, downloads (`download`, `readtext`) append the raw file bytes to stdout after the
+  header. The helper reads the request, then runs
   `initgroups` → `setgid` → `setuid` → `chdir("/")` (order mandatory) and executes exactly one
   operation. Failure exit codes: 111 setgid, 112 initgroups, 113 setuid, 120 unreadable request,
   127 unsupported platform.
@@ -143,12 +149,26 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `POST /mkdir` `{path}`, `POST /touch` `{path}`, `POST /rename` `{path,newName}`,
   `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
   `{sources,target,overwrite}`, `POST /upload?path=&overwrite=` (multipart field `file`),
-  `GET /download?path=`. Errors are ProblemDetails: 400 invalid path/request, 403 permission or
-  outside roots, 404 missing, 409 conflict or non-empty directory, 413 too large, 504 helper
-  timeout. Listing is capped by `MaxListEntries` and reports `truncated`.
+  `GET /download?path=`, `GET /text?path=` and `POST /text` `{path,content,expectedModifiedAt,hasBom}`.
+  Errors are ProblemDetails: 400 invalid path/request or non-UTF-8 text, 403 permission or
+  outside roots, 404 missing, 409 conflict (external modification or non-empty directory),
+  413 too large, 504 helper timeout. Listing is capped by `MaxListEntries` and reports
+  `truncated`. `GET /text` returns `{path,content,modifiedAt,size,hasBom}`; `POST /text` returns
+  `{ok,modifiedAt,size}` and maps the helper's `conflict` code to 409.
+- Online text editing is layered on the same helper: `readtext` reuses the download framing
+  (header + raw bytes) and `writetext` reuses the upload framing. Only UTF-8 is supported
+  (optional UTF-8 BOM is detected and preserved; invalid UTF-8 or NUL bytes → 400). Reads are
+  capped by `Koi:Files:MaxTextFileBytes`; when the helper's header reports a larger size the
+  parent kills the helper before draining, so the response is a 413 rather than a timeout.
+  Saves are optimistic-concurrency writes: the request carries the `modifiedAt` observed at read
+  time, the helper compares it with the current mtime and returns `conflict` (409) on mismatch;
+  `expectedModifiedAt=0` forces an overwrite. The helper writes a temp file in the same directory,
+  copies the original Unix mode onto it, then atomically renames it over the target (symlinks are
+  resolved and their target is replaced, never the link itself).
 - File config keys: `Koi:Files:Enabled`, `AllowedRoots`, `MaxUploadBytes` (default 100 MiB;
   `Program.cs` raises the Kestrel request-body limit and `FormOptions.MultipartBodyLengthLimit`
-  accordingly), `MaxListEntries`, `HelperTimeoutSeconds` (metadata ops, 120 s),
+  accordingly), `MaxListEntries`, `MaxTextFileBytes` (online text read/write cap, default 5 MiB),
+  `HelperTimeoutSeconds` (metadata and text read/write ops, 120 s),
   `ListTimeoutSeconds` (directory listing, 300 s), `TransferTimeoutSeconds` (delete/copy/move,
   1800 s), `StreamIdleTimeoutSeconds` (upload/download with no data flowing, 120 s) and
   `StreamMaxSeconds` (upload/download total cap, 0 = unlimited). Uploads are written to a temp file
@@ -182,6 +202,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
   `ui/dist/conf/setting.json` to retarget the backend without rebuilding. When the backend serves
   the SPA, this file is deliberately sent with `no-store` so edits take effect immediately.
+  `fileAssociations.text` in the same file lists the extension/name rules (`".txt"`, `".md"`,
+  `"dockerfile"`, …) that the UI treats as text: such files open in the editor from the row menu
+  `打开` / `编辑文本` or by clicking the name. Missing or invalid rules fall back to a built-in
+  list; an explicit empty array means “no text files”. Production deploys replace
+  `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
+- The text editor (`ui/src/views/EditorView.vue`, `/editor`) keeps its tabs in
+  `src/stores/editor.ts`, so switching routes preserves unsaved content; a browser refresh loses
+  it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
+  lets the user overwrite (`expectedModifiedAt=0`) or reload. The editor is a plain monospace
+  textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow.
 
 ## Knowledge base
 

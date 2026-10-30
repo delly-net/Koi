@@ -1,12 +1,20 @@
+using System.Text;
 using Koi.Api.Auth;
 using Koi.Api.Terminal;
 using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Files;
 
-/// <summary>文件管理端点：目录浏览、新建、重命名、删除、复制、移动、上传、下载。</summary>
+/// <summary>文件管理端点：目录浏览、新建、重命名、删除、复制、移动、上传、下载、在线文本读写。</summary>
 public static class FileEndpoints
 {
+    /// <summary>严格 UTF-8 解码器：遇到非法字节序列抛异常，避免把二进制内容当文本返回。</summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
+    private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
+
     public static IEndpointRouteBuilder MapFileEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/files")
@@ -27,6 +35,8 @@ public static class FileEndpoints
             TransferAsync(context, request, service, options, move: true, cancellationToken));
         group.MapPost("/upload", UploadAsync);
         group.MapGet("/download", DownloadAsync);
+        group.MapGet("/text", ReadTextAsync);
+        group.MapPost("/text", SaveTextAsync);
 
         return app;
     }
@@ -331,6 +341,141 @@ public static class FileEndpoints
         }
     }
 
+    /// <summary>读取文本文件内容（UTF-8），大小受 <c>Koi:Files:MaxTextFileBytes</c> 限制。</summary>
+    private static async Task<IResult> ReadTextAsync(
+        HttpContext context,
+        string? path,
+        FileOperationService service,
+        IOptions<FileOptions> optionsAccessor,
+        CancellationToken cancellationToken)
+    {
+        var options = optionsAccessor.Value;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (ValidatePath(path, options, out var normalized) is { } invalid)
+        {
+            return invalid;
+        }
+
+        var limit = Math.Max(options.MaxTextFileBytes, 1);
+        var request = NewRequest(identity!, options, "readtext") with
+        {
+            Path = normalized,
+            MaxBytes = limit,
+        };
+
+        var (response, content) = await service.ReadTextAsync(request, limit, cancellationToken);
+        if (!response.Ok)
+        {
+            return ToResult(response);
+        }
+
+        if (content is null)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "读取失败",
+                detail: "文件辅助进程没有返回文本内容。");
+        }
+
+        if (!TryDecodeText(content, out var text, out var hasBom))
+        {
+            return BadRequest("文本编码不支持", "该文件不是有效的 UTF-8 文本，无法在线编辑。");
+        }
+
+        if (text.Contains('\0'))
+        {
+            return BadRequest("文件不是文本", "该文件包含二进制内容，无法在线编辑。");
+        }
+
+        return Results.Ok(new FileTextResponse(
+            normalized,
+            text,
+            response.ModifiedAt ?? 0,
+            content.LongLength,
+            hasBom));
+    }
+
+    /// <summary>保存在线编辑的文本；<c>expectedModifiedAt</c> 用于乐观并发冲突检测。</summary>
+    private static async Task<IResult> SaveTextAsync(
+        HttpContext context,
+        FileTextSaveRequest? request,
+        FileOperationService service,
+        IOptions<FileOptions> optionsAccessor,
+        CancellationToken cancellationToken)
+    {
+        var options = optionsAccessor.Value;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (ValidatePath(request?.Path, options, out var normalized) is { } invalid)
+        {
+            return invalid;
+        }
+
+        if (request?.Content is null)
+        {
+            return BadRequest("请求不合法", "请提供要保存的文本内容。");
+        }
+
+        var limit = Math.Max(options.MaxTextFileBytes, 1);
+        var body = Encoding.UTF8.GetBytes(request.Content);
+        var total = body.LongLength + (request.HasBom ? Utf8Bom.Length : 0);
+        if (total > limit || total > int.MaxValue)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status413PayloadTooLarge,
+                title: "文件过大",
+                detail: $"在线编辑的内容不能超过 {limit} 字节。");
+        }
+
+        using var content = new MemoryStream((int)total);
+        if (request.HasBom)
+        {
+            content.Write(Utf8Bom);
+        }
+
+        content.Write(body);
+        content.Position = 0;
+
+        var helperRequest = NewRequest(identity!, options, "writetext") with
+        {
+            Path = normalized,
+            MaxBytes = limit,
+            ExpectedModifiedAt = request.ExpectedModifiedAt,
+        };
+
+        var response = await service.SaveTextAsync(helperRequest, content, cancellationToken);
+        if (!response.Ok)
+        {
+            return ToResult(response);
+        }
+
+        return Results.Ok(new FileTextSaveResponse(true, response.ModifiedAt ?? 0, response.Size ?? total));
+    }
+
+    private static bool TryDecodeText(byte[] data, out string content, out bool hasBom)
+    {
+        hasBom = data.Length >= Utf8Bom.Length && data.AsSpan(0, Utf8Bom.Length).SequenceEqual(Utf8Bom);
+        var offset = hasBom ? Utf8Bom.Length : 0;
+
+        try
+        {
+            content = StrictUtf8.GetString(data, offset, data.Length - offset);
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            content = string.Empty;
+            return false;
+        }
+    }
+
     private static FileHelperRequest NewRequest(
         UserProcessIdentity identity,
         FileOptions options,
@@ -424,6 +569,7 @@ public static class FileEndpoints
             FileErrorCodes.IsDirectory => StatusCodes.Status400BadRequest,
             FileErrorCodes.NotDirectory => StatusCodes.Status400BadRequest,
             FileErrorCodes.NotEmpty => StatusCodes.Status409Conflict,
+            FileErrorCodes.Conflict => StatusCodes.Status409Conflict,
             FileErrorCodes.TooLarge => StatusCodes.Status413PayloadTooLarge,
             FileErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
             _ => StatusCodes.Status500InternalServerError,
@@ -444,6 +590,7 @@ public static class FileEndpoints
         FileErrorCodes.IsDirectory => "目标是目录",
         FileErrorCodes.NotDirectory => "目标不是目录",
         FileErrorCodes.NotEmpty => "目录非空",
+        FileErrorCodes.Conflict => "文件已被修改",
         FileErrorCodes.TooLarge => "文件过大",
         FileErrorCodes.Timeout => "操作超时",
         _ => "文件操作失败",
@@ -470,6 +617,12 @@ public sealed record FileDeleteRequest(string[]? Paths, bool Recursive);
 
 public sealed record FileTransferRequest(string[]? Sources, string? Target, bool Overwrite);
 
+public sealed record FileTextSaveRequest(string? Path, string? Content, long ExpectedModifiedAt, bool HasBom);
+
 public sealed record FileRootsResponse(string Home, string[] Roots);
 
 public sealed record FileMutationResponse(bool Ok);
+
+public sealed record FileTextResponse(string Path, string Content, long ModifiedAt, long Size, bool HasBom);
+
+public sealed record FileTextSaveResponse(bool Ok, long ModifiedAt, long Size);

@@ -93,7 +93,7 @@ public static class FileHelper
 
         try
         {
-            if (string.Equals(request.Op, "download", StringComparison.Ordinal))
+            if (request.Op is "download" or "readtext")
             {
                 var (response, stream) = FileOperations.OpenDownload(request);
                 using (stream)

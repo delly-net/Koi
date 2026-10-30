@@ -30,6 +30,24 @@ export interface FileMutationResponse {
   ok: boolean
 }
 
+/** 读取文本文件的结果（服务端仅接受 UTF-8）。 */
+export interface TextFileResponse {
+  path: string
+  content: string
+  /** 修改时间（Unix 毫秒），保存时用于冲突检测。 */
+  modifiedAt: number
+  /** 文件字节数（含 BOM）。 */
+  size: number
+  /** 原文件是否带 UTF-8 BOM，保存时原样保留。 */
+  hasBom: boolean
+}
+
+export interface TextFileSaveResponse {
+  ok: boolean
+  modifiedAt: number
+  size: number
+}
+
 interface ProblemDetails {
   title?: string
   detail?: string
@@ -104,6 +122,28 @@ export function moveEntries(
 /** 下载地址：由浏览器直接发起 GET，会话 Cookie 随同源请求自动携带。 */
 export function buildDownloadUrl(path: string): string {
   return buildApiUrl(`/api/files/download?path=${encodePath(path)}`)
+}
+
+/** 读取文本文件内容；非 UTF-8 或超过大小上限时后端返回 400/413。 */
+export function readTextFile(path: string): Promise<TextFileResponse> {
+  return request<TextFileResponse>(`/api/files/text?path=${encodePath(path)}`)
+}
+
+/**
+ * 保存文本文件。
+ * `expectedModifiedAt` 为读取/上次保存时的修改时间，服务端不一致时返回 409；
+ * 传 0 表示强制覆盖（用户确认后）。
+ */
+export function saveTextFile(
+  path: string,
+  content: string,
+  expectedModifiedAt: number,
+  hasBom: boolean,
+): Promise<TextFileSaveResponse> {
+  return request<TextFileSaveResponse>('/api/files/text', {
+    method: 'POST',
+    body: JSON.stringify({ path, content, expectedModifiedAt, hasBom }),
+  })
 }
 
 async function parseUploadError(response: Response): Promise<never> {

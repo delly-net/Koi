@@ -6,6 +6,7 @@ import {
   logout as logoutRequest,
   type AuthUser,
 } from '@/api/auth'
+import { useEditorStore } from '@/stores/editor'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
@@ -34,6 +35,8 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await loginRequest(userName, password)
       initialized.value = true
+      // 新会话从空编辑器开始，避免上一个用户未清理的标签内容串到当前用户。
+      useEditorStore().reset()
     } finally {
       loading.value = false
     }
@@ -44,6 +47,7 @@ export const useAuthStore = defineStore('auth', () => {
       await logoutRequest()
     } finally {
       user.value = null
+      useEditorStore().reset()
     }
   }
 

@@ -17,6 +17,9 @@ public sealed class FileOptions
     /// <summary>单次目录列举返回的最大条目数。</summary>
     public int MaxListEntries { get; set; } = 5000;
 
+    /// <summary>在线文本编辑允许的文件大小上限（字节）。读取与保存都受此限制。</summary>
+    public long MaxTextFileBytes { get; set; } = 5 * 1024 * 1024;
+
     /// <summary>普通元数据操作（新建目录/新建文件/重命名）的超时时间（秒）。</summary>
     public int HelperTimeoutSeconds { get; set; } = 120;
 

@@ -26,6 +26,8 @@ import {
   uploadFile,
 } from '@/api/files'
 import { ApiError } from '@/api/http'
+import { isTextFile } from '@/config/appConfig'
+import { useEditorStore } from '@/stores/editor'
 
 interface Crumb {
   label: string
@@ -40,6 +42,7 @@ interface EditState {
 }
 
 const router = useRouter()
+const editor = useEditorStore()
 
 const currentPath = ref('')
 const parentPath = ref<string | null>(null)
@@ -105,10 +108,28 @@ function onSelectionChange(rows: FileEntry[]): void {
   selection.value = rows
 }
 
-/** 打开条目：仅目录可打开；文件需通过「下载」操作。 */
+/** 打开文本文件：加入编辑器标签并跳转编辑页；标签在编辑页内异步读取。 */
+function openTextEditor(row: FileEntry): void {
+  if (row.isDirectory || !isTextFile(row.name)) {
+    return
+  }
+
+  void editor.openFile(row.path)
+  void router.push({ name: 'editor' })
+}
+
+/**
+ * 打开条目：目录进入目录；配置中声明为文本的文件进入在线编辑；
+ * 其余文件不可打开，只能通过「下载」操作。
+ */
 function openEntry(row: FileEntry): void {
   if (row.isDirectory) {
     void load(row.path)
+    return
+  }
+
+  if (isTextFile(row.name)) {
+    openTextEditor(row)
   }
 }
 
@@ -122,12 +143,15 @@ function downloadEntry(row: FileEntry): void {
 }
 
 /** 行操作菜单命令，与模板中 el-dropdown-item 的 command 一一对应。 */
-type RowAction = 'open' | 'download' | 'rename' | 'copy' | 'cut' | 'delete'
+type RowAction = 'open' | 'edit' | 'download' | 'rename' | 'copy' | 'cut' | 'delete'
 
 function onRowAction(command: RowAction, row: FileEntry): void {
   switch (command) {
     case 'open':
       openEntry(row)
+      break
+    case 'edit':
+      openTextEditor(row)
       break
     case 'download':
       downloadEntry(row)
@@ -445,7 +469,7 @@ onMounted(async () => {
           <template #default="{ row }">
             <span
               class="entry"
-              :class="{ openable: row.isDirectory }"
+              :class="{ openable: row.isDirectory || isTextFile(row.name) }"
               @click.stop="openEntry(row)"
             >
               <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
@@ -481,8 +505,17 @@ onMounted(async () => {
                 <el-button size="small" :icon="MoreFilled">操作</el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item command="open" :disabled="!row.isDirectory">
+                    <el-dropdown-item
+                      command="open"
+                      :disabled="!row.isDirectory && !isTextFile(row.name)"
+                    >
                       打开
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      command="edit"
+                      :disabled="row.isDirectory || !isTextFile(row.name)"
+                    >
+                      编辑文本
                     </el-dropdown-item>
                     <el-dropdown-item command="download" :disabled="row.isDirectory">
                       下载

@@ -13,6 +13,7 @@ public static class FileErrorCodes
     public const string IsDirectory = "is_directory";
     public const string NotDirectory = "not_directory";
     public const string NotEmpty = "not_empty";
+    public const string Conflict = "conflict";
     public const string TooLarge = "too_large";
     public const string IoError = "io_error";
     public const string HelperFailed = "helper_failed";
@@ -50,6 +51,9 @@ public sealed record FileHelperRequest
 
     public long MaxBytes { get; init; }
 
+    /// <summary>保存文本时的乐观并发基准（Unix 毫秒）；<c>0</c> 表示不校验，直接覆盖。</summary>
+    public long ExpectedModifiedAt { get; init; }
+
     /// <summary>允许访问的根目录（辅助进程二次校验，纵深防御）。</summary>
     public string[]? Roots { get; init; }
 }
@@ -85,6 +89,9 @@ public sealed record FileHelperResponse
     public long? Size { get; init; }
 
     public string? Name { get; init; }
+
+    /// <summary>文件修改时间（Unix 毫秒），读取/保存文本后回传给前端做冲突检测。</summary>
+    public long? ModifiedAt { get; init; }
 
     public static FileHelperResponse Success() => new() { Ok = true };
 

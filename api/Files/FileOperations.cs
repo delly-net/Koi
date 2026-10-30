@@ -43,6 +43,7 @@ public static class FileOperations
                 "copy" => Transfer(request, move: false),
                 "move" => Transfer(request, move: true),
                 "upload" => await UploadAsync(request, input, cancellationToken),
+                "writetext" => await WriteTextAsync(request, input, cancellationToken),
                 _ => throw new FileOperationException(FileErrorCodes.InvalidPath, "不支持的操作。"),
             };
         }
@@ -107,6 +108,7 @@ public static class FileOperations
                     Ok = true,
                     Size = stream.Length,
                     Name = Path.GetFileName(path),
+                    ModifiedAt = new DateTimeOffset(File.GetLastWriteTimeUtc(path)).ToUnixTimeMilliseconds(),
                 },
                 stream);
         }
@@ -412,6 +414,114 @@ public static class FileOperations
         }
 
         return FileHelperResponse.Success();
+    }
+
+    /// <summary>
+    /// 保存在线编辑的文本内容：请求头之后是 UTF-8 原始字节。
+    /// 先写同目录临时文件并保留原权限位，再原子改名，避免中断留下半截文件。
+    /// </summary>
+    private static async Task<FileHelperResponse> WriteTextAsync(
+        FileHelperRequest request,
+        Stream input,
+        CancellationToken cancellationToken)
+    {
+        var path = RequirePath(request, request.Path);
+        if (Directory.Exists(path))
+        {
+            throw new FileOperationException(FileErrorCodes.IsDirectory, "目标是目录，无法保存文本。");
+        }
+
+        // 符号链接写入其指向的真实文件，避免把链接本身替换成普通文件。
+        if (IsSymlink(path))
+        {
+            var target = new FileInfo(path).ResolveLinkTarget(returnFinalTarget: true)
+                ?? throw new FileOperationException(FileErrorCodes.NotFound, "符号链接目标不存在。");
+            path = RequirePath(request, target.FullName);
+        }
+
+        if (!File.Exists(path))
+        {
+            throw new FileOperationException(FileErrorCodes.NotFound, "文件不存在，无法保存。");
+        }
+
+        if (request.ExpectedModifiedAt > 0)
+        {
+            var current = new DateTimeOffset(File.GetLastWriteTimeUtc(path)).ToUnixTimeMilliseconds();
+            if (current != request.ExpectedModifiedAt)
+            {
+                throw new FileOperationException(
+                    FileErrorCodes.Conflict,
+                    "文件已被其他程序修改，请重新加载或确认覆盖。");
+            }
+        }
+
+        UnixFileMode? mode = null;
+        try
+        {
+            mode = File.GetUnixFileMode(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 读取权限位失败不影响内容写入，沿用临时文件默认权限。
+        }
+
+        var directory = Path.GetDirectoryName(path)
+            ?? throw new FileOperationException(FileErrorCodes.InvalidPath, "无法确定父目录。");
+        var temporary = Path.Combine(directory, $".koi-edit-{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            await using (var output = new FileStream(
+                temporary,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                CopyBufferSize,
+                System.IO.FileOptions.Asynchronous))
+            {
+                var buffer = new byte[CopyBufferSize];
+                long total = 0;
+                int read;
+                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                {
+                    total += read;
+                    if (request.MaxBytes > 0 && total > request.MaxBytes)
+                    {
+                        throw new FileOperationException(FileErrorCodes.TooLarge, "文本内容超过大小限制。");
+                    }
+
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                }
+
+                await output.FlushAsync(cancellationToken);
+            }
+
+            if (mode is { } value)
+            {
+                try
+                {
+                    File.SetUnixFileMode(temporary, value);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // 权限位恢复失败时仍完成保存，避免内容丢失。
+                }
+            }
+
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(temporary);
+        }
+
+        var info = new FileInfo(path);
+        return new FileHelperResponse
+        {
+            Ok = true,
+            Size = info.Length,
+            ModifiedAt = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+        };
     }
 
     private static FileEntryInfo Describe(FileSystemInfo info)

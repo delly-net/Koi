@@ -17,6 +17,34 @@ public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<
     public Task<FileHelperResponse> ExecuteAsync(FileHelperRequest request, CancellationToken cancellationToken) =>
         RunAsync(request, uploadContent: null, downloadOutput: null, onDownloadHeader: null, cancellationToken);
 
+    /// <summary>
+    /// 读取在线编辑的文本：以下载模式读取原始字节到内存，超过 <paramref name="maxBytes"/> 时
+    /// 立即终止辅助进程并返回 <c>too_large</c>，避免子进程阻塞在写满的管道上。
+    /// </summary>
+    public async Task<(FileHelperResponse Response, byte[]? Content)> ReadTextAsync(
+        FileHelperRequest request,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        var response = await RunAsync(
+            request,
+            uploadContent: null,
+            downloadOutput: buffer,
+            onDownloadHeader: null,
+            cancellationToken,
+            maxDownloadBytes: maxBytes);
+
+        return (response, response.Ok ? buffer.ToArray() : null);
+    }
+
+    /// <summary>保存在线编辑的文本：请求头之后把内容以原始字节写入辅助进程标准输入。</summary>
+    public Task<FileHelperResponse> SaveTextAsync(
+        FileHelperRequest request,
+        Stream content,
+        CancellationToken cancellationToken) =>
+        RunAsync(request, content, downloadOutput: null, onDownloadHeader: null, cancellationToken);
+
     /// <summary>上传：请求头之后把请求体流式写入辅助进程的标准输入。</summary>
     public Task<FileHelperResponse> UploadAsync(
         FileHelperRequest request,
@@ -40,7 +68,8 @@ public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<
         Stream? uploadContent,
         Stream? downloadOutput,
         Func<FileHelperResponse, Task>? onDownloadHeader,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long? maxDownloadBytes = null)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -113,6 +142,16 @@ public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<
 
             if (response.Ok && downloadOutput is not null)
             {
+                // 只接受头部声明的大小；超限时先终止子进程，避免它继续往管道里写。
+                if (maxDownloadBytes is { } limit && response.Size is { } size && size > limit)
+                {
+                    Kill(process);
+                    await WaitForExitAsync(process, timeout.Token);
+                    return FileHelperResponse.Failure(
+                        FileErrorCodes.TooLarge,
+                        $"文件大小 {size} 字节，超过在线编辑上限 {limit} 字节。");
+                }
+
                 if (onDownloadHeader is not null)
                 {
                     await onDownloadHeader(response);
@@ -206,6 +245,8 @@ public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<
         "move" => "移动",
         "upload" => "上传",
         "download" => "下载",
+        "readtext" => "读取文本",
+        "writetext" => "保存文本",
         _ => "文件操作",
     };
 
