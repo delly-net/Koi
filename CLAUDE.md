@@ -33,6 +33,15 @@ the action column stays narrow. Directories are opened by clicking the entry nam
 the name or choosing `打开` / `编辑文本`; other files are downloaded via `下载` (double-click no
 longer opens entries).
 
+Inside the single `文件管理` workspace tab the file manager is itself tabbed: every inner tab
+(`FileBrowserPane` in `ui/src/components/files/`) browses an independent directory and keeps its own
+path, listing, selection and loading state. The `+` button opens a new tab at the account home
+directory, and a directory row's `操作` menu offers `在新页签打开`. The copy/cut clipboard is a
+Pinia store (`ui/src/stores/filesClipboard.ts`) shared by all file tabs, so entries copied or cut in
+one tab can be pasted into the directory of another; a successful cut-paste clears it, closing a
+tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost when the workspace
+`文件管理` tab is closed.
+
 ## Layout
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
@@ -43,7 +52,8 @@ longer opens entries).
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
   types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth,
   workspace tab and editor tab state), `src/router/`, `src/views/` (`WorkspaceView.vue` shell plus
-  the home / terminal / files / editor panels), `src/components/terminal/` (xterm.js pane).
+  the home / terminal / files / editor panels), `src/components/terminal/` (xterm.js pane),
+  `src/components/files/` (per-directory `FileBrowserPane` used by the file manager's inner tabs).
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -209,6 +219,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   terminal. `/terminal`, `/files` and `/editor` are no longer routes — they fall through the
   catch-all to `/`. `TerminalView` still passes `active` to `TerminalPane` so a hidden terminal
   is refitted and focused when its tab becomes visible.
+- The 首页 panel (`views/HomeView.vue`) shows three module cards whose entry buttons share one
+  style: all `type="primary"`, full width of the card body, and pinned to the card bottom
+  (`p { flex: 1 }` plus a column flex body) so the three buttons sit on the same horizontal line
+  even though the descriptions differ in length. Keep new home cards on the same pattern.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
