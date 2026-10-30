@@ -219,6 +219,14 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   terminal. `/terminal`, `/files` and `/editor` are no longer routes — they fall through the
   catch-all to `/`. `TerminalView` still passes `active` to `TerminalPane` so a hidden terminal
   is refitted and focused when its tab becomes visible.
+- Terminal pane sizing (`components/terminal/TerminalPane.vue`): the element FitAddon measures
+  (`.terminal-host`) must stay free of padding — `proposeDimensions()` only subtracts the padding of
+  `.xterm` itself, so host padding is counted as usable height, one row is over-estimated and the
+  bottom row ends up clipped to half a line. The 8 px inset therefore lives on `.terminal-pane`.
+  `fitTerminal()` runs `trimClippedRows()` after `fitAddon.fit()`: it compares the rendered
+  `.xterm-screen` height with the `.xterm` client height and drops rows (never adds) until nothing
+  overflows, and the pane is refitted once `document.fonts.ready` resolves because font metrics set
+  the cell height. Hidden panes (size < 24 px) are still skipped.
 - The 首页 panel (`views/HomeView.vue`) shows three module cards whose entry buttons share one
   style: all `type="primary"`, full width of the card body, and pinned to the card bottom
   (`p { flex: 1 }` plus a column flex body) so the three buttons sit on the same horizontal line

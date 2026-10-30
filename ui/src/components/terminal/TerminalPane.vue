@@ -63,6 +63,13 @@ onMounted(async () => {
   await nextTick()
   fitTerminal()
   connect()
+
+  // 字体度量变化会改变单元格高度，字体就绪后再校正一次，避免底部末行被裁切。
+  void document.fonts?.ready.then(() => {
+    if (!disposed) {
+      fitTerminal()
+    }
+  })
 })
 
 watch(
@@ -198,8 +205,38 @@ function fitTerminal(): void {
 
   try {
     fitAddon.fit()
+    trimClippedRows()
   } catch {
     // 容器尚未完成布局时 fit 可能抛错，下次尺寸变化会重试。
+  }
+}
+
+/**
+ * 校正被裁切的末行：FitAddon 只扣除 .xterm 自身内边距，父容器存在内边距等
+ * 未计入的高度时会多算一行，底部只能露出半行。这里按真实渲染高度逐行回退。
+ */
+function trimClippedRows(): void {
+  const element = term?.element
+  const screen = element?.querySelector<HTMLElement>('.xterm-screen')
+  if (!term || !element || !screen) {
+    return
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const screenHeight = screen.getBoundingClientRect().height
+    const visibleHeight = element.clientHeight
+    const rowHeight = screenHeight / term.rows
+    if (rowHeight <= 0 || screenHeight - visibleHeight <= 0.5) {
+      return
+    }
+
+    const drop = Math.max(1, Math.ceil((screenHeight - visibleHeight) / rowHeight))
+    if (term.rows - drop < 2) {
+      return
+    }
+
+    // resize 会触发 onResize → 服务端 TIOCSWINSZ 同步。
+    term.resize(term.cols, term.rows - drop)
   }
 }
 
@@ -249,16 +286,16 @@ defineExpose({ fitTerminal })
   position: relative;
   height: 100%;
   min-height: 240px;
+  padding: 8px;
   background: #1e1e1e;
   border-radius: 4px;
   overflow: hidden;
 }
 
+/* 内边距不要放在这里：FitAddon 以该元素高度估算行数，会把内边距算成可用高度。 */
 .terminal-host {
-  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  padding: 8px;
 }
 
 .terminal-host :deep(.xterm) {
