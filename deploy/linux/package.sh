@@ -1,10 +1,11 @@
 #!/bin/bash
 # 将发布目录打包为 deb / rpm 安装包，便于离线分发与统一安装。
 #
-# 用法：./package.sh [all|deb|rpm] [发布目录]
+# 用法：./package.sh [all|deb|rpm] [-p 发布目录] [-o 输出目录] [目录]
 #   - 发布目录默认 /project/delly-net/publish/Koi/files（api-build.sh 与 ui-build.sh 的产物），
 #     也可通过 KOI_PUBLISH_DIR 指定；
 #   - 输出目录默认 <发布目录的上一级>/packages，可通过 KOI_PACKAGE_DIR 指定；
+#   - 位置目录里含 koi 可执行文件时按发布目录处理，否则按输出目录处理；
 #   - 包版本号取打包时刻 yyyyMMddHHmmss，产物文件名同样是该时间戳结尾：
 #       koi-20261030121530.deb / koi-20261030121530.rpm
 #
@@ -18,6 +19,13 @@
 #       Debian/Ubuntu: apt install rpm
 #       RHEL/Fedora:   dnf install rpm-build
 #   缺少某个工具时只跳过对应格式，最后以非 0 退出码报告。
+
+# 本脚本使用 bash 特性（BASH_SOURCE、数组等）。Debian 的 /bin/sh 是 dash，
+# 直接用 `sh package.sh` 调用会报 Bad substitution，这里切换到 bash 重新执行。
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 APP_NAME="koi"
@@ -32,43 +40,87 @@ die() { echo "错误：$*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
-用法：./package.sh [all|deb|rpm] [发布目录]
+用法：./package.sh [all|deb|rpm] [-p 发布目录] [-o 输出目录] [目录]
 
-  all        同时生成 deb 与 rpm（默认）
-  deb        只生成 deb
-  rpm        只生成 rpm
+  all                 同时生成 deb 与 rpm（默认）
+  deb                 只生成 deb
+  rpm                 只生成 rpm
+  -p, --publish DIR   发布目录（含 koi 可执行文件与 wwwroot）
+  -o, --output DIR    安装包输出目录
 
-  发布目录   默认 /project/delly-net/publish/Koi/files，也可用 KOI_PUBLISH_DIR 指定
-  输出目录   默认 <发布目录上一级>/packages，也可用 KOI_PACKAGE_DIR 指定
+  位置目录：含 koi 可执行文件时按发布目录处理，否则按输出目录处理。
+  发布目录默认 /project/delly-net/publish/Koi/files（KOI_PUBLISH_DIR 可覆盖）；
+  输出目录默认 <发布目录上一级>/packages（KOI_PACKAGE_DIR 可覆盖）。
 
 示例：
   ./package.sh
   ./package.sh rpm
   ./package.sh all /project/delly-net/publish/Koi/files
+  ./package.sh all -o packages
+  ./package.sh all -p /srv/koi-publish -o /srv/koi-packages
 EOF
 }
 
 # ---------------------------------------------------------------- 参数与环境
-TARGET="all"
+TARGET=""
 PUBLISH_DIR="${KOI_PUBLISH_DIR:-/project/delly-net/publish/Koi/files}"
+OUT_DIR="${KOI_PACKAGE_DIR:-}"
+PUBLISH_SET=0
+OUT_SET=0
+POSITIONAL=""
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         -h|--help) usage; exit 0 ;;
-        all|deb|rpm) TARGET="$arg" ;;
-        -*) die "未知参数 $arg（见 --help）" ;;
-        *) PUBLISH_DIR="$arg" ;;
+        -p|--publish)
+            [ $# -ge 2 ] || die "$1 缺少目录参数"
+            PUBLISH_DIR="$2"; PUBLISH_SET=1; shift 2 ;;
+        --publish=*|-p=*)
+            PUBLISH_DIR="${1#*=}"; PUBLISH_SET=1; shift ;;
+        -o|--output)
+            [ $# -ge 2 ] || die "$1 缺少目录参数"
+            OUT_DIR="$2"; OUT_SET=1; shift 2 ;;
+        --output=*|-o=*)
+            OUT_DIR="${1#*=}"; OUT_SET=1; shift ;;
+        all|deb|rpm) TARGET="$1"; shift ;;
+        -*)
+            die "未知参数 $1（见 --help）" ;;
+        *)
+            [ -z "$POSITIONAL" ] || die "只能给出一个目录参数，其余目录请用 -p / -o 指定"
+            POSITIONAL="$1"; shift ;;
     esac
 done
+TARGET="${TARGET:-all}"
 
-[ -d "$PUBLISH_DIR" ] || die "发布目录不存在：$PUBLISH_DIR（请先执行 api-build.sh 与 ui-build.sh）"
+# 位置目录二义时按内容判断：有 koi 可执行文件就是发布目录，否则按输出目录处理。
+if [ -n "$POSITIONAL" ]; then
+    if [ -f "$POSITIONAL/koi" ]; then
+        [ "$PUBLISH_SET" -eq 1 ] && die "发布目录被指定了两次：-p $PUBLISH_DIR 与 $POSITIONAL"
+        PUBLISH_DIR="$POSITIONAL"
+        PUBLISH_SET=1
+    elif [ -d "$POSITIONAL" ] || [ -d "$PUBLISH_DIR" ]; then
+        [ "$OUT_SET" -eq 1 ] && die "输出目录被指定了两次：-o $OUT_DIR 与 $POSITIONAL"
+        OUT_DIR="$POSITIONAL"
+        OUT_SET=1
+        echo "提示：$POSITIONAL 中没有 koi 可执行文件，按输出目录处理。"
+    else
+        PUBLISH_DIR="$POSITIONAL"
+    fi
+fi
+
+[ -d "$PUBLISH_DIR" ] || die "发布目录不存在：$PUBLISH_DIR（请先执行 api-build.sh 与 ui-build.sh，或用 -p 指定）"
 PUBLISH_DIR="$(cd "$PUBLISH_DIR" && pwd)"
-[ -f "$PUBLISH_DIR/koi" ] || die "发布目录缺少可执行文件 koi：$PUBLISH_DIR"
+[ -f "$PUBLISH_DIR/koi" ] || die "发布目录缺少可执行文件 koi：$PUBLISH_DIR（发布目录应为 koi + wwwroot；输出目录请用 -o 指定）"
 [ -f "$PUBLISH_DIR/wwwroot/index.html" ] || warn "发布目录缺少 wwwroot/index.html，安装包将只提供 API，没有前端页面。"
 
-OUT_DIR="${KOI_PACKAGE_DIR:-$(dirname "$PUBLISH_DIR")/packages}"
-mkdir -p "$OUT_DIR"
+[ -n "$OUT_DIR" ] || OUT_DIR="$(dirname "$PUBLISH_DIR")/packages"
+case "$OUT_DIR" in /*) ;; *) OUT_DIR="$PWD/$OUT_DIR" ;; esac
+mkdir -p "$OUT_DIR" || die "无法创建输出目录：$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+# 输出目录若嵌在发布目录内，上一次的安装包会被再次打进新包。
+case "$OUT_DIR/" in
+    "$PUBLISH_DIR/"*) warn "输出目录位于发布目录内，发布目录中已有的安装包会被一起打进新包，建议用 -o 指定其他目录。" ;;
+esac
 
 STAMP="$(date +%Y%m%d%H%M%S)"
 DEB_FILE="$OUT_DIR/${APP_NAME}-${STAMP}.deb"

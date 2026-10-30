@@ -81,9 +81,11 @@ program directory so `koi.db` and `wwwroot` resolve there — then enables and s
 unit runs as root because `pam_unix` needs privileged access to the account database; terminal
 children do not inherit it — they drop to the logged-in user inside the PTY.
 
-`deploy/linux/package.sh [all|deb|rpm] [publish dir]` packages the publish output (default
-`/project/delly-net/publish/Koi/files`) into `koi-<yyyyMMddHHmmss>.deb` and `.rpm` in
-`<publish dir>/../packages`; the package version is the same timestamp. Both packages install to
+`deploy/linux/package.sh [all|deb|rpm] [-p publish dir] [-o output dir] [dir]` packages the
+publish output (default `/project/delly-net/publish/Koi/files`) into `koi-<yyyyMMddHHmmss>.deb`
+and `.rpm` in `<publish dir>/../packages`; the package version is the same timestamp. A positional
+directory containing the `koi` executable is the publish dir, otherwise it is the output dir; the
+script re-execs under `bash` when invoked with `sh` (Debian's `dash`). Both packages install to
 `/opt/delly-net/Koi` plus `/etc/systemd/system/koi.service` (content must stay in sync with
 `install.sh`), enable and start the service, keep the unit as a conffile / `%config(noreplace)`,
 and never touch `koi.db`. The deb is built with `dpkg-deb` when present and otherwise assembled
