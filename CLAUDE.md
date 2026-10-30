@@ -81,6 +81,14 @@ program directory so `koi.db` and `wwwroot` resolve there — then enables and s
 unit runs as root because `pam_unix` needs privileged access to the account database; terminal
 children do not inherit it — they drop to the logged-in user inside the PTY.
 
+`deploy/linux/package.sh [all|deb|rpm] [publish dir]` packages the publish output (default
+`/project/delly-net/publish/Koi/files`) into `koi-<yyyyMMddHHmmss>.deb` and `.rpm` in
+`<publish dir>/../packages`; the package version is the same timestamp. Both packages install to
+`/opt/delly-net/Koi` plus `/etc/systemd/system/koi.service` (content must stay in sync with
+`install.sh`), enable and start the service, keep the unit as a conffile / `%config(noreplace)`,
+and never touch `koi.db`. The deb is built with `dpkg-deb` when present and otherwise assembled
+from `ar` + `tar`; rpm needs `rpmbuild` (a missing tool skips that format and exits non-zero).
+
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
 TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.
 
