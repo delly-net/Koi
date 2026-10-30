@@ -24,6 +24,11 @@ Both projects are scaffolded, and login, online terminals and file management ar
   multi-tab xterm.js terminal page, and a file manager page.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
+The file manager keeps directory-level actions in the toolbar and collapses every row operation
+(open / download / rename / copy / cut / delete) into a single `操作` dropdown per row, so the
+action column stays narrow. Directories are opened by clicking the entry name or choosing `打开`;
+files are not openable and are downloaded via `下载` (double-click no longer opens entries).
+
 ## Layout
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,

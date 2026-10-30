@@ -8,6 +8,7 @@ import {
   DocumentAdd,
   Folder,
   FolderAdd,
+  MoreFilled,
   Refresh,
   Upload,
 } from '@element-plus/icons-vue'
@@ -104,13 +105,11 @@ function onSelectionChange(rows: FileEntry[]): void {
   selection.value = rows
 }
 
+/** 打开条目：仅目录可打开；文件需通过「下载」操作。 */
 function openEntry(row: FileEntry): void {
   if (row.isDirectory) {
     void load(row.path)
-    return
   }
-
-  downloadEntry(row)
 }
 
 function downloadEntry(row: FileEntry): void {
@@ -120,6 +119,32 @@ function downloadEntry(row: FileEntry): void {
   document.body.appendChild(link)
   link.click()
   link.remove()
+}
+
+/** 行操作菜单命令，与模板中 el-dropdown-item 的 command 一一对应。 */
+type RowAction = 'open' | 'download' | 'rename' | 'copy' | 'cut' | 'delete'
+
+function onRowAction(command: RowAction, row: FileEntry): void {
+  switch (command) {
+    case 'open':
+      openEntry(row)
+      break
+    case 'download':
+      downloadEntry(row)
+      break
+    case 'rename':
+      openRename(row)
+      break
+    case 'copy':
+      setClipboard([row], 'copy')
+      break
+    case 'cut':
+      setClipboard([row], 'cut')
+      break
+    case 'delete':
+      void removeEntries([row])
+      break
+  }
 }
 
 function openCreate(mode: 'mkdir' | 'touch'): void {
@@ -414,12 +439,15 @@ onMounted(async () => {
         height="100%"
         row-key="path"
         @selection-change="onSelectionChange"
-        @row-dblclick="openEntry"
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="name" label="名称" min-width="260" sortable>
           <template #default="{ row }">
-            <span class="entry" @dblclick.stop="openEntry(row)">
+            <span
+              class="entry"
+              :class="{ openable: row.isDirectory }"
+              @click.stop="openEntry(row)"
+            >
               <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
                 <Folder v-if="row.isDirectory" />
                 <Document v-else />
@@ -442,15 +470,33 @@ onMounted(async () => {
           <template #default="{ row }">{{ formatTime(row.modifiedAt) }}</template>
         </el-table-column>
         <el-table-column prop="mode" label="权限" width="120" />
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="96" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button v-if="!row.isDirectory" text size="small" @click="downloadEntry(row)">
-              下载
-            </el-button>
-            <el-button text size="small" @click="openRename(row)">重命名</el-button>
-            <el-button text size="small" @click="setClipboard([row], 'copy')">复制</el-button>
-            <el-button text size="small" @click="setClipboard([row], 'cut')">剪切</el-button>
-            <el-button text size="small" type="danger" @click="removeEntries([row])">删除</el-button>
+            <!-- 阻止冒泡，避免点菜单时触发名称单击打开 -->
+            <div @click.stop>
+              <el-dropdown
+                trigger="click"
+                @command="(command: RowAction) => onRowAction(command, row)"
+              >
+                <el-button size="small" :icon="MoreFilled">操作</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="open" :disabled="!row.isDirectory">
+                      打开
+                    </el-dropdown-item>
+                    <el-dropdown-item command="download" :disabled="row.isDirectory">
+                      下载
+                    </el-dropdown-item>
+                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                    <el-dropdown-item command="copy">复制</el-dropdown-item>
+                    <el-dropdown-item command="cut">剪切</el-dropdown-item>
+                    <el-dropdown-item command="delete" divided class="danger-item">
+                      删除
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -547,6 +593,15 @@ onMounted(async () => {
   cursor: default;
 }
 
+.entry.openable {
+  cursor: pointer;
+}
+
+.entry.openable:hover .entry-name {
+  color: #409eff;
+  text-decoration: underline;
+}
+
 .entry-icon {
   color: #909399;
 }
@@ -584,4 +639,10 @@ onMounted(async () => {
 .hidden-input {
   display: none;
 }
+
+/* 下拉菜单传送到 body，scoped 样式无法命中，这里用全局选择器标记危险项 */
+:global(.el-dropdown-menu__item.danger-item) {
+  color: #f56c6c;
+}
+
 </style>
