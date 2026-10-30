@@ -13,15 +13,15 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 
 ## Repository state
 
-Both projects are scaffolded and the login path is implemented.
+Both projects are scaffolded, and login, online terminals and file management are implemented.
 
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
-  PTY-backed online terminal over WebSocket, and static hosting of the built SPA from `wwwroot`
-  with history-mode fallback.
+  PTY-backed online terminal over WebSocket, privilege-dropping file management over REST, and
+  static hosting of the built SPA from `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
-  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell, and a
-  multi-tab xterm.js terminal page.
+  `package-lock.json`): router guard, Pinia auth store, login page, post-login shell, a
+  multi-tab xterm.js terminal page, and a file manager page.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 ## Layout
@@ -29,10 +29,10 @@ Both projects are scaffolded and the login path is implemented.
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
   middleware, endpoints), `Data/` (EF Core context and entities), `Hosting/` (frontend static
   files and SPA fallback), `Terminal/` (PTY P/Invoke, privileged helper process, session registry,
-  WebSocket endpoint),
-  `appsettings*.json`.
-- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper and terminal protocol types),
-  `src/config/` (runtime config), `src/stores/` (Pinia), `src/router/`, `src/views/`,
+  WebSocket endpoint), `Files/` (path validation, file helper process, operation service, REST
+  endpoints), `appsettings*.json`.
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
+  types), `src/config/` (runtime config), `src/stores/` (Pinia), `src/router/`, `src/views/`,
   `src/components/terminal/` (xterm.js pane).
 - `icon/` — application icons (48 / 256 / full size).
 
@@ -107,16 +107,44 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `DefaultRows`, `CloseTimeoutSeconds`. `PosixPty` relies on `AllowUnsafeBlocks` (only that file
   uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
   no `forkpty`, no libutil, no C toolchain on the build host.
-- API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable`),
-  `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`;
-  errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
-  back to the SPA.
+- API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
+  `fileAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
+  `GET /api/terminal/ws`, and the `/api/files/*` group described below; errors use ProblemDetails.
+  Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
   sends `ready` (sessionId/userName/pid/cols/rows), `output` (UTF-8 decoded text), `exit` (code),
   `error` (message) and `pong`. Authentication is the session cookie (401); the handshake is then
   Origin-checked explicitly (403) because it is a GET and therefore bypasses
   `SameOriginMiddleware`; non-Linux or disabled returns 503.
+- File management runs every filesystem operation in a privilege-dropping helper process
+  (`Files/FileHelper.cs`, hidden argument `--koi-file-helper`), for the same reason terminals do:
+  the service runs as root for PAM, so the main process must never read or write user files
+  itself. The parent launches the same binary with `Process.Start` (never `fork`), writes one
+  framed request (4-byte little-endian length + UTF-8 JSON header) to stdin, and reads one framed
+  response from stdout; uploads append the raw file bytes to stdin after the header, downloads
+  append the raw file bytes to stdout after the header. The helper reads the request, then runs
+  `initgroups` → `setgid` → `setuid` → `chdir("/")` (order mandatory) and executes exactly one
+  operation. Failure exit codes: 111 setgid, 112 initgroups, 113 setuid, 120 unreadable request,
+  127 unsupported platform.
+- File path policy: every path must be absolute, at most 4096 characters, free of NUL/control
+  characters, normalized with `Path.GetFullPath`, resolved through symlinks (`File.ResolveLinkTarget`)
+  and contained in `Koi:Files:AllowedRoots`. The default is `["/"]` — whole-filesystem visibility is
+  an explicit product decision; the real boundary is the dropped user's OS permissions. Names are
+  limited to 255 characters and may not contain `/`. Deletion refuses `/` and configured roots;
+  symlinks are deleted/copied as links and never traversed by recursive copy.
+- File API (`/api/files`, session cookie required; non-Linux or `Koi:Files:Enabled=false` → 503;
+  account missing from `getpwnam_r` → 403): `GET /roots`, `GET /list?path=`,
+  `POST /mkdir` `{path}`, `POST /touch` `{path}`, `POST /rename` `{path,newName}`,
+  `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
+  `{sources,target,overwrite}`, `POST /upload?path=&overwrite=` (multipart field `file`),
+  `GET /download?path=`. Errors are ProblemDetails: 400 invalid path/request, 403 permission or
+  outside roots, 404 missing, 409 conflict or non-empty directory, 413 too large, 504 helper
+  timeout. Listing is capped by `MaxListEntries` and reports `truncated`.
+- File config keys: `Koi:Files:Enabled`, `AllowedRoots`, `MaxUploadBytes` (default 100 MiB;
+  `Program.cs` raises the Kestrel request-body limit and `FormOptions.MultipartBodyLengthLimit`
+  accordingly), `MaxListEntries`, `HelperTimeoutSeconds`. Uploads are written to a temp file in the
+  destination directory and renamed into place, so an interrupted upload leaves no partial target.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
   content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is
@@ -131,8 +159,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   (`ConfigureConventions`). Do not remove it, and do not add per-property conversions that
   bypass it. Changing the storage format leaves existing rows unreadable: delete `koi.db`
   after such a change (sessions are ephemeral and users simply log in again).
-- The UI is a separate SPA communicating with the API over HTTP and WebSocket. As terminal-session
-  and file-operation endpoints are added, keep their contracts documented.
+- The UI is a separate SPA communicating with the API over HTTP and WebSocket. Keep any new
+  endpoint and protocol contracts documented here.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit

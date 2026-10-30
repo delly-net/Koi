@@ -1,13 +1,23 @@
 using System.Threading.RateLimiting;
 using Koi.Api.Auth;
 using Koi.Api.Data;
+using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Terminal;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+// Koi 的文件配置类与 System.IO.FileOptions 同名，这里显式指定。
+using FileOptions = Koi.Api.Files.FileOptions;
 
-// 终端辅助进程模式：必须在构建 Web 宿主之前分流，辅助进程只负责接管 PTY，不启动 Kestrel。
+// 辅助进程模式：必须在构建 Web 宿主之前分流，辅助进程只执行单次任务，不启动 Kestrel。
 if (PtyHelper.TryRun(args))
+{
+    return;
+}
+
+// 文件辅助进程：从标准输入读取一次降权后的文件操作请求并回传结果。
+if (FileHelper.TryRun(args))
 {
     return;
 }
@@ -36,9 +46,20 @@ builder.Services.Configure<KoiStaticFilesOptions>(
     builder.Configuration.GetSection(KoiStaticFilesOptions.SectionName));
 builder.Services.Configure<TerminalOptions>(
     builder.Configuration.GetSection(TerminalOptions.SectionName));
+builder.Services.Configure<FileOptions>(
+    builder.Configuration.GetSection(FileOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
+builder.Services.AddSingleton<FileOperationService>();
+
+// 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
+var fileOptions = builder.Configuration
+    .GetSection(FileOptions.SectionName)
+    .Get<FileOptions>() ?? new FileOptions();
+var uploadRequestLimit = Math.Max(1, fileOptions.MaxUploadBytes) + 1024 * 1024;
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = uploadRequestLimit);
+builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = uploadRequestLimit);
 
 var authOptions = builder.Configuration
     .GetSection(AuthOptions.SectionName)
@@ -107,11 +128,13 @@ app.MapGet("/api/health", () => Results.Ok(new
     platform = OperatingSystem.IsLinux() ? "linux" : "other",
     pamAvailable = OperatingSystem.IsLinux(),
     terminalAvailable = OperatingSystem.IsLinux(),
+    fileAvailable = OperatingSystem.IsLinux(),
     timestamp = DateTimeOffset.UtcNow,
 }));
 
 app.MapAuthEndpoints();
 app.MapTerminalEndpoints();
+app.MapFileEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();

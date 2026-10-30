@@ -31,7 +31,7 @@ async function handleLogout(): Promise<void> {
     <el-main class="main">
       <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
         <template #extra>
-          <p class="hint">终端能力已接入，文件管理将在后续任务中提供。</p>
+          <p class="hint">终端与文件管理能力已接入。</p>
         </template>
       </el-result>
 
@@ -44,8 +44,8 @@ async function handleLogout(): Promise<void> {
 
         <el-card class="module-card" shadow="hover">
           <template #header>文件管理</template>
-          <p>文件移动、复制、粘贴与在线编辑规划中。</p>
-          <el-button disabled>敬请期待</el-button>
+          <p>浏览目录，新建、重命名、删除、移动、复制、粘贴、上传与下载，以登录用户身份执行。</p>
+          <el-button type="primary" @click="router.push({ name: 'files' })">打开文件管理</el-button>
         </el-card>
       </div>
     </el-main>

@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
 import HomeView from '@/views/HomeView.vue'
 import TerminalView from '@/views/TerminalView.vue'
+import FilesView from '@/views/FilesView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -22,6 +23,11 @@ const router = createRouter({
       path: '/terminal',
       name: 'terminal',
       component: TerminalView,
+    },
+    {
+      path: '/files',
+      name: 'files',
+      component: FilesView,
     },
     {
       path: '/:pathMatch(.*)*',

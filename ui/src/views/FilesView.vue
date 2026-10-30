@@ -1,0 +1,587 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  CopyDocument,
+  Document,
+  DocumentAdd,
+  Folder,
+  FolderAdd,
+  Refresh,
+  Upload,
+} from '@element-plus/icons-vue'
+import type { FileEntry } from '@/api/files'
+import {
+  buildDownloadUrl,
+  copyEntries,
+  createFile,
+  deleteEntries,
+  getFileRoots,
+  listFiles,
+  makeDirectory,
+  moveEntries,
+  renameEntry,
+  uploadFile,
+} from '@/api/files'
+import { ApiError } from '@/api/http'
+
+interface Crumb {
+  label: string
+  path: string
+}
+
+interface EditState {
+  mode: 'mkdir' | 'touch' | 'rename'
+  title: string
+  value: string
+  target?: FileEntry
+}
+
+const router = useRouter()
+
+const currentPath = ref('')
+const parentPath = ref<string | null>(null)
+const entries = ref<FileEntry[]>([])
+const truncated = ref(false)
+const loading = ref(false)
+const uploading = ref(false)
+const selection = ref<FileEntry[]>([])
+const clipboard = ref<{ mode: 'copy' | 'cut'; sources: string[] } | null>(null)
+const uploadInput = ref<HTMLInputElement | null>(null)
+
+const editDialog = ref(false)
+const editLoading = ref(false)
+const editState = ref<EditState>({ mode: 'mkdir', title: '', value: '' })
+
+const breadcrumbs = computed<Crumb[]>(() => {
+  if (!currentPath.value) {
+    return []
+  }
+
+  const crumbs: Crumb[] = [{ label: '/', path: '/' }]
+  let accumulated = ''
+  for (const part of currentPath.value.split('/').filter(Boolean)) {
+    accumulated += `/${part}`
+    crumbs.push({ label: part, path: accumulated })
+  }
+
+  return crumbs
+})
+
+const selectedCount = computed(() => selection.value.length)
+
+function showError(error: unknown): void {
+  if (error instanceof ApiError) {
+    ElMessage.error(error.detail ? `${error.message}：${error.detail}` : error.message)
+    return
+  }
+
+  ElMessage.error(error instanceof Error ? error.message : '操作失败')
+}
+
+function joinPath(directory: string, name: string): string {
+  return directory === '/' ? `/${name}` : `${directory.replace(/\/+$/, '')}/${name}`
+}
+
+async function load(path?: string): Promise<void> {
+  loading.value = true
+  try {
+    const data = await listFiles(path)
+    currentPath.value = data.path
+    parentPath.value = data.parent
+    entries.value = data.entries
+    truncated.value = data.truncated
+    selection.value = []
+  } catch (error) {
+    showError(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+function onSelectionChange(rows: FileEntry[]): void {
+  selection.value = rows
+}
+
+function openEntry(row: FileEntry): void {
+  if (row.isDirectory) {
+    void load(row.path)
+    return
+  }
+
+  downloadEntry(row)
+}
+
+function downloadEntry(row: FileEntry): void {
+  const link = document.createElement('a')
+  link.href = buildDownloadUrl(row.path)
+  link.download = row.name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+function openCreate(mode: 'mkdir' | 'touch'): void {
+  editState.value = {
+    mode,
+    title: mode === 'mkdir' ? '新建文件夹' : '新建文件',
+    value: '',
+  }
+  editDialog.value = true
+}
+
+function openRename(row: FileEntry): void {
+  editState.value = { mode: 'rename', title: '重命名', value: row.name, target: row }
+  editDialog.value = true
+}
+
+async function submitEdit(): Promise<void> {
+  const value = editState.value.value.trim()
+  if (!value) {
+    ElMessage.warning('名称不能为空')
+    return
+  }
+
+  if (value.includes('/')) {
+    ElMessage.warning('名称不能包含路径分隔符')
+    return
+  }
+
+  editLoading.value = true
+  try {
+    if (editState.value.mode === 'rename') {
+      await renameEntry(editState.value.target!.path, value)
+    } else {
+      const target = joinPath(currentPath.value, value)
+      if (editState.value.mode === 'mkdir') {
+        await makeDirectory(target)
+      } else {
+        await createFile(target)
+      }
+    }
+
+    editDialog.value = false
+    ElMessage.success('操作成功')
+    await load(currentPath.value)
+  } catch (error) {
+    showError(error)
+  } finally {
+    editLoading.value = false
+  }
+}
+
+async function removeEntries(rows: FileEntry[]): Promise<void> {
+  if (rows.length === 0) {
+    return
+  }
+
+  const recursive = rows.some((row) => row.isDirectory)
+  try {
+    await ElMessageBox.confirm(
+      `确定删除选中的 ${rows.length} 个条目吗？${recursive ? '目录及其内容会被递归删除。' : ''}`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  try {
+    await deleteEntries(
+      rows.map((row) => row.path),
+      recursive,
+    )
+    ElMessage.success('已删除')
+    await load(currentPath.value)
+  } catch (error) {
+    showError(error)
+  }
+}
+
+function setClipboard(rows: FileEntry[], mode: 'copy' | 'cut'): void {
+  if (rows.length === 0) {
+    return
+  }
+
+  clipboard.value = { mode, sources: rows.map((row) => row.path) }
+  ElMessage.success(`已${mode === 'copy' ? '复制' : '剪切'} ${rows.length} 项`)
+}
+
+async function transfer(
+  mode: 'copy' | 'cut',
+  sources: string[],
+  target: string,
+  overwrite: boolean,
+): Promise<void> {
+  if (mode === 'copy') {
+    await copyEntries(sources, target, overwrite)
+  } else {
+    await moveEntries(sources, target, overwrite)
+  }
+}
+
+async function paste(): Promise<void> {
+  const clipboardValue = clipboard.value
+  if (!clipboardValue) {
+    return
+  }
+
+  try {
+    await transfer(
+      clipboardValue.mode,
+      clipboardValue.sources,
+      currentPath.value,
+      false,
+    )
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      try {
+        await ElMessageBox.confirm('目标位置存在同名条目，是否覆盖？', '覆盖确认', {
+          type: 'warning',
+          confirmButtonText: '覆盖',
+          cancelButtonText: '取消',
+        })
+      } catch {
+        return
+      }
+
+      try {
+        await transfer(
+          clipboardValue.mode,
+          clipboardValue.sources,
+          currentPath.value,
+          true,
+        )
+      } catch (retryError) {
+        showError(retryError)
+        return
+      }
+    } else {
+      showError(error)
+      return
+    }
+  }
+
+  if (clipboardValue.mode === 'cut') {
+    clipboard.value = null
+  }
+
+  ElMessage.success('粘贴完成')
+  await load(currentPath.value)
+}
+
+function pickUpload(): void {
+  uploadInput.value?.click()
+}
+
+async function onUploadChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (files.length === 0) {
+    return
+  }
+
+  uploading.value = true
+  let succeeded = 0
+  try {
+    for (const file of files) {
+      try {
+        await uploadFile(currentPath.value, file, false)
+        succeeded += 1
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) {
+          showError(error)
+          continue
+        }
+
+        try {
+          await ElMessageBox.confirm(`「${file.name}」已存在，是否覆盖？`, '覆盖确认', {
+            type: 'warning',
+            confirmButtonText: '覆盖',
+            cancelButtonText: '跳过',
+          })
+        } catch {
+          continue
+        }
+
+        try {
+          await uploadFile(currentPath.value, file, true)
+          succeeded += 1
+        } catch (retryError) {
+          showError(retryError)
+        }
+      }
+    }
+  } finally {
+    uploading.value = false
+  }
+
+  if (succeeded > 0) {
+    ElMessage.success(`已上传 ${succeeded} 个文件`)
+    await load(currentPath.value)
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+function formatTime(milliseconds: number): string {
+  if (!milliseconds) {
+    return '—'
+  }
+
+  return new Date(milliseconds).toLocaleString('zh-CN', { hour12: false })
+}
+
+function sortByModified(left: FileEntry, right: FileEntry): number {
+  return left.modifiedAt - right.modifiedAt
+}
+
+onMounted(async () => {
+  try {
+    const roots = await getFileRoots()
+    await load(roots.home)
+  } catch (error) {
+    showError(error)
+  }
+})
+</script>
+
+<template>
+  <div class="files-view">
+    <div class="toolbar">
+      <el-button text @click="router.push({ name: 'home' })">返回首页</el-button>
+      <span class="title">文件管理</span>
+
+      <div class="actions">
+        <el-button :icon="FolderAdd" @click="openCreate('mkdir')">新建文件夹</el-button>
+        <el-button :icon="DocumentAdd" @click="openCreate('touch')">新建文件</el-button>
+        <el-button :icon="Upload" :loading="uploading" @click="pickUpload">上传</el-button>
+        <el-button
+          :icon="CopyDocument"
+          :disabled="!clipboard"
+          @click="paste"
+        >
+          粘贴{{ clipboard ? `（${clipboard.sources.length}）` : '' }}
+        </el-button>
+        <el-button :icon="Refresh" @click="load(currentPath)">刷新</el-button>
+      </div>
+
+      <input ref="uploadInput" type="file" multiple class="hidden-input" @change="onUploadChange" />
+    </div>
+
+    <div class="path-bar">
+      <el-button text :disabled="!parentPath" @click="parentPath && load(parentPath)">
+        上一级
+      </el-button>
+
+      <el-breadcrumb separator="/" class="crumbs">
+        <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb.path">
+          <a class="crumb" @click.prevent="load(crumb.path)">{{ crumb.label }}</a>
+        </el-breadcrumb-item>
+      </el-breadcrumb>
+
+      <el-button
+        type="danger"
+        plain
+        size="small"
+        :disabled="selectedCount === 0"
+        @click="removeEntries(selection)"
+      >
+        删除选中（{{ selectedCount }}）
+      </el-button>
+    </div>
+
+    <div class="table-wrap">
+      <el-table
+        v-loading="loading"
+        :data="entries"
+        height="100%"
+        row-key="path"
+        @selection-change="onSelectionChange"
+        @row-dblclick="openEntry"
+      >
+        <el-table-column type="selection" width="44" />
+        <el-table-column prop="name" label="名称" min-width="260" sortable>
+          <template #default="{ row }">
+            <span class="entry" @dblclick.stop="openEntry(row)">
+              <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
+                <Folder v-if="row.isDirectory" />
+                <Document v-else />
+              </el-icon>
+              <span class="entry-name">{{ row.name }}</span>
+              <el-tag v-if="row.isSymlink" size="small" type="info" effect="plain">链接</el-tag>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="size" label="大小" width="110" sortable>
+          <template #default="{ row }">{{ row.isDirectory ? '—' : formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column
+          prop="modifiedAt"
+          label="修改时间"
+          width="190"
+          sortable
+          :sort-method="sortByModified"
+        >
+          <template #default="{ row }">{{ formatTime(row.modifiedAt) }}</template>
+        </el-table-column>
+        <el-table-column prop="mode" label="权限" width="120" />
+        <el-table-column label="操作" width="250" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="!row.isDirectory" text size="small" @click="downloadEntry(row)">
+              下载
+            </el-button>
+            <el-button text size="small" @click="openRename(row)">重命名</el-button>
+            <el-button text size="small" @click="setClipboard([row], 'copy')">复制</el-button>
+            <el-button text size="small" @click="setClipboard([row], 'cut')">剪切</el-button>
+            <el-button text size="small" type="danger" @click="removeEntries([row])">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
+    <div class="status-bar">
+      <span>共 {{ entries.length }} 项</span>
+      <span v-if="clipboard" class="clipboard">
+        剪贴板：{{ clipboard.mode === 'copy' ? '复制' : '剪切' }} {{ clipboard.sources.length }} 项
+        <el-button text size="small" @click="clipboard = null">清空</el-button>
+      </span>
+      <span v-if="truncated" class="warning">目录条目过多，仅显示前 {{ entries.length }} 项</span>
+    </div>
+
+    <el-dialog v-model="editDialog" :title="editState.title" width="420px">
+      <el-input
+        v-model="editState.value"
+        placeholder="请输入名称"
+        maxlength="255"
+        @keyup.enter="submitEdit"
+      />
+      <template #footer>
+        <el-button @click="editDialog = false">取消</el-button>
+        <el-button type="primary" :loading="editLoading" @click="submitEdit">确定</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<style scoped>
+.files-view {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px 16px;
+  background: #f5f7fa;
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.path-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+.crumbs {
+  flex: 1;
+  min-width: 0;
+}
+
+.crumb {
+  color: #409eff;
+  cursor: pointer;
+}
+
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+  background: #ffffff;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+}
+
+.entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+
+.entry-icon {
+  color: #909399;
+}
+
+.entry-icon.folder {
+  color: #e6a23c;
+}
+
+.entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 2px 0;
+  color: #909399;
+  font-size: 12px;
+}
+
+.clipboard {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.warning {
+  color: #e6a23c;
+}
+
+.hidden-input {
+  display: none;
+}
+</style>
