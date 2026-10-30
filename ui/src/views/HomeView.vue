@@ -1,95 +1,48 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useWorkspaceStore } from '@/stores/workspace'
 
-const router = useRouter()
 const auth = useAuthStore()
+const workspace = useWorkspaceStore()
 const userName = computed(() => auth.user?.userName ?? '')
-
-async function handleLogout(): Promise<void> {
-  await auth.logout()
-  ElMessage.success('已退出登录')
-  await router.replace({ name: 'login' })
-}
 </script>
 
 <template>
-  <el-container class="layout">
-    <el-header class="header">
-      <div class="brand">
-        <img src="/koi_48.png" alt="Koi" class="logo" />
-        <span class="title">Koi Linux Web UI</span>
-      </div>
-      <div class="user">
-        <el-tag type="success" effect="plain">{{ userName }}</el-tag>
-        <el-button text @click="handleLogout">退出登录</el-button>
-      </div>
-    </el-header>
+  <div class="home-view">
+    <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
+      <template #extra>
+        <p class="hint">终端、文件管理与文本编辑都在工作区标签中打开，可自由切换。</p>
+      </template>
+    </el-result>
 
-    <el-main class="main">
-      <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
-        <template #extra>
-          <p class="hint">终端与文件管理能力已接入。</p>
-        </template>
-      </el-result>
+    <div class="modules">
+      <el-card class="module-card" shadow="hover">
+        <template #header>在线终端</template>
+        <p>多终端会话，基于 Linux PTY 与 WebSocket，以登录用户身份运行。</p>
+        <el-button type="primary" @click="workspace.open('terminal')">打开终端</el-button>
+      </el-card>
 
-      <div class="modules">
-        <el-card class="module-card" shadow="hover">
-          <template #header>在线终端</template>
-          <p>多终端会话，基于 Linux PTY 与 WebSocket，以登录用户身份运行。</p>
-          <el-button type="primary" @click="router.push({ name: 'terminal' })">打开终端</el-button>
-        </el-card>
+      <el-card class="module-card" shadow="hover">
+        <template #header>文件管理</template>
+        <p>浏览目录，新建、重命名、删除、移动、复制、粘贴、上传与下载，以登录用户身份执行。</p>
+        <el-button type="primary" @click="workspace.open('files')">打开文件管理</el-button>
+      </el-card>
 
-        <el-card class="module-card" shadow="hover">
-          <template #header>文件管理</template>
-          <p>浏览目录，新建、重命名、删除、移动、复制、粘贴、上传与下载，以登录用户身份执行。</p>
-          <el-button type="primary" @click="router.push({ name: 'files' })">打开文件管理</el-button>
-        </el-card>
-      </div>
-    </el-main>
-  </el-container>
+      <el-card class="module-card" shadow="hover">
+        <template #header>文本编辑</template>
+        <p>多标签在线编辑 UTF-8 文本文件；通常从文件管理的【编辑文本】或文件名称进入。</p>
+        <el-button @click="workspace.open('editor')">打开文本编辑</el-button>
+      </el-card>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.layout {
-  min-height: 100%;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #ffffff;
-  border-bottom: 1px solid #e4e7ed;
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.logo {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-}
-
-.title {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.main {
+.home-view {
+  height: 100%;
   padding: 24px;
+  overflow: auto;
 }
 
 .hint {
@@ -101,8 +54,8 @@ async function handleLogout(): Promise<void> {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
-  max-width: 880px;
-  margin: 24px auto 0;
+  max-width: 1100px;
+  margin: 0 auto;
 }
 
 .module-card p {

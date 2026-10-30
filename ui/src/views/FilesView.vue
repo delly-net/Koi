@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CopyDocument,
@@ -28,6 +27,7 @@ import {
 import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
 import { useEditorStore } from '@/stores/editor'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 interface Crumb {
   label: string
@@ -41,8 +41,8 @@ interface EditState {
   target?: FileEntry
 }
 
-const router = useRouter()
 const editor = useEditorStore()
+const workspace = useWorkspaceStore()
 
 const currentPath = ref('')
 const parentPath = ref<string | null>(null)
@@ -108,14 +108,14 @@ function onSelectionChange(rows: FileEntry[]): void {
   selection.value = rows
 }
 
-/** 打开文本文件：加入编辑器标签并跳转编辑页；标签在编辑页内异步读取。 */
+/** 打开文本文件：加入编辑器标签并激活「文本编辑」工作区标签；内容在编辑器内异步读取。 */
 function openTextEditor(row: FileEntry): void {
   if (row.isDirectory || !isTextFile(row.name)) {
     return
   }
 
   void editor.openFile(row.path)
-  void router.push({ name: 'editor' })
+  workspace.open('editor')
 }
 
 /**
@@ -414,7 +414,6 @@ onMounted(async () => {
 <template>
   <div class="files-view">
     <div class="toolbar">
-      <el-button text @click="router.push({ name: 'home' })">返回首页</el-button>
       <span class="title">文件管理</span>
 
       <div class="actions">
@@ -564,7 +563,7 @@ onMounted(async () => {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   padding: 12px 16px;
   background: #f5f7fa;
 }

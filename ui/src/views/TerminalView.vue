@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 import TerminalPane from '@/components/terminal/TerminalPane.vue'
 
 interface TerminalTab {
@@ -8,7 +7,6 @@ interface TerminalTab {
   title: string
 }
 
-const router = useRouter()
 const tabs = ref<TerminalTab[]>([])
 const activeKey = ref('')
 
@@ -49,7 +47,6 @@ createTab()
 <template>
   <div class="terminal-view">
     <div class="toolbar">
-      <el-button text @click="router.push({ name: 'home' })">返回首页</el-button>
       <span class="title">在线终端</span>
       <span class="hint">每个标签为独立会话；断开或刷新后需重新连接</span>
     </div>
@@ -80,7 +77,7 @@ createTab()
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   padding: 12px 16px;
   background: #f5f7fa;
 }

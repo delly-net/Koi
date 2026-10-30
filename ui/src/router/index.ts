@@ -1,10 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
-import HomeView from '@/views/HomeView.vue'
-import TerminalView from '@/views/TerminalView.vue'
-import FilesView from '@/views/FilesView.vue'
-import EditorView from '@/views/EditorView.vue'
+import WorkspaceView from '@/views/WorkspaceView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,26 +13,13 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      // 首页/终端/文件管理/文本编辑共享工作区标签栏，模块切换不改变路由
       path: '/',
-      name: 'home',
-      component: HomeView,
+      name: 'workspace',
+      component: WorkspaceView,
     },
     {
-      path: '/terminal',
-      name: 'terminal',
-      component: TerminalView,
-    },
-    {
-      path: '/files',
-      name: 'files',
-      component: FilesView,
-    },
-    {
-      path: '/editor',
-      name: 'editor',
-      component: EditorView,
-    },
-    {
+      // 旧模块路径（/terminal、/files、/editor）与未知路径统一回到工作区首页
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },
@@ -48,7 +32,7 @@ router.beforeEach(async (to) => {
 
   if (to.meta.public) {
     if (auth.isAuthenticated && to.name === 'login') {
-      return { name: 'home' }
+      return { name: 'workspace' }
     }
     return true
   }

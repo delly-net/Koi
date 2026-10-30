@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useEditorStore, type EditorTab } from '@/stores/editor'
 import { readTextFile, saveTextFile } from '@/api/files'
 import { ApiError } from '@/api/http'
 
-const router = useRouter()
 const editor = useEditorStore()
 
 const activeTab = computed<EditorTab | null>(
@@ -195,8 +193,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     @keydown.meta.s.prevent="onSaveShortcut"
   >
     <div class="toolbar">
-      <el-button text @click="router.push({ name: 'home' })">返回首页</el-button>
-      <el-button text @click="router.push({ name: 'files' })">返回文件管理</el-button>
       <span class="title">文本编辑</span>
       <span v-if="activeTab" class="path" :title="activeTab.path">{{ activeTab.path }}</span>
 
@@ -272,7 +268,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   padding: 12px 16px;
   background: #f5f7fa;
 }

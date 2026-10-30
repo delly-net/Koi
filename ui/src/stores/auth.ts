@@ -7,6 +7,7 @@ import {
   type AuthUser,
 } from '@/api/auth'
 import { useEditorStore } from '@/stores/editor'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
@@ -35,8 +36,9 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await loginRequest(userName, password)
       initialized.value = true
-      // 新会话从空编辑器开始，避免上一个用户未清理的标签内容串到当前用户。
+      // 新会话从空编辑器与首页标签开始，避免上一个用户未清理的标签内容串到当前用户。
       useEditorStore().reset()
+      useWorkspaceStore().reset()
     } finally {
       loading.value = false
     }
@@ -48,6 +50,8 @@ export const useAuthStore = defineStore('auth', () => {
     } finally {
       user.value = null
       useEditorStore().reset()
+      // 标签状态随会话结束清空，避免下一个用户看到上一个用户打开的模块。
+      useWorkspaceStore().reset()
     }
   }
 

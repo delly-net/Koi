@@ -41,9 +41,9 @@ longer opens entries).
   WebSocket endpoint), `Files/` (path validation, file helper process, operation service, REST
   endpoints), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
-  types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth
-  and editor tab state), `src/router/`, `src/views/` (file manager and `EditorView.vue`),
-  `src/components/terminal/` (xterm.js pane).
+  types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth,
+  workspace tab and editor tab state), `src/router/`, `src/views/` (`WorkspaceView.vue` shell plus
+  the home / terminal / files / editor panels), `src/components/terminal/` (xterm.js pane).
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -197,6 +197,18 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   after such a change (sessions are ephemeral and users simply log in again).
 - The UI is a separate SPA communicating with the API over HTTP and WebSocket. Keep any new
   endpoint and protocol contracts documented here.
+- Frontend layout: after login the app is a single workspace shell (`views/WorkspaceView.vue`,
+  route `/`) whose page header owns the brand, user name and logout. Below it a shared card tab bar
+  (`stores/workspace.ts`: keys `home` / `terminal` / `files` / `editor`) hosts the four modules as
+  panels. `首页` is the fixed entry tab and cannot be closed; the others are opened on demand
+  (home cards, or opening a text file from the file manager) and can be closed, and closing the
+  active tab returns to 首页. Tab state is in-memory only: it is not reflected in the URL, a
+  browser refresh lands on 首页, and logout resets it. Because `el-tabs` keeps every opened pane
+  mounted and only toggles visibility, switching tabs preserves module state (terminal WS/PTY,
+  current directory, editor tabs); closing a tab unmounts its panel and therefore closes that
+  terminal. `/terminal`, `/files` and `/editor` are no longer routes — they fall through the
+  catch-all to `/`. `TerminalView` still passes `active` to `TerminalPane` so a hidden terminal
+  is refitted and focused when its tab becomes visible.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
@@ -207,9 +219,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `打开` / `编辑文本` or by clicking the name. Missing or invalid rules fall back to a built-in
   list; an explicit empty array means “no text files”. Production deploys replace
   `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
-- The text editor (`ui/src/views/EditorView.vue`, `/editor`) keeps its tabs in
-  `src/stores/editor.ts`, so switching routes preserves unsaved content; a browser refresh loses
-  it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
+- The text editor (`ui/src/views/EditorView.vue`, the `editor` workspace tab) keeps its tabs in
+  `src/stores/editor.ts`, so switching workspace tabs preserves unsaved content; a browser refresh
+  loses it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
   lets the user overwrite (`expectedModifiedAt=0`) or reload. The editor is a plain monospace
   textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow.
 
