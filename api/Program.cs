@@ -1,5 +1,6 @@
 using System.Threading.RateLimiting;
 using Koi.Api.Auth;
+using Koi.Api.Configuration;
 using Koi.Api.Data;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
@@ -23,6 +24,10 @@ if (FileHelper.TryRun(args))
 }
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Linux 下从 /etc/koi/appsettings.json 读取外部配置；文件缺失时用发布默认值自动创建。
+// 必须早于任何 builder.Configuration 读取，否则数据库路径、文件与终端上限仍取旧值。
+var externalConfigPath = builder.AddKoiExternalConfiguration();
 
 builder.Services.AddProblemDetails();
 
@@ -92,6 +97,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+
+if (externalConfigPath is not null)
+{
+    app.Logger.LogInformation("外部配置文件：{ConfigPath}", externalConfigPath);
+}
 
 // 当前阶段使用 EnsureCreated；后续引入迁移后改为 Migrate。
 using (var scope = app.Services.CreateScope())

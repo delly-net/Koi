@@ -11,6 +11,8 @@
 #
 # 安装布局与 install.sh 保持一致：程序目录 /opt/delly-net/Koi，
 # unit 文件 /etc/systemd/system/koi.service（内容需与 install.sh 保持同步）。
+# 外部配置 /etc/koi/appsettings.json 也会预置到包中，并作为配置文件保留
+# （deb conffiles / rpm %config(noreplace)），升级不会覆盖用户修改。
 # 升级与卸载不会删除 /opt/delly-net/Koi/koi.db —— 它不属于包内容，用户数据得以保留。
 #
 # 依赖工具：
@@ -32,6 +34,8 @@ APP_NAME="koi"
 KOI_HOME="/opt/delly-net/Koi"
 UNIT_NAME="koi.service"
 UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
+CONFIG_DIR="/etc/koi"
+CONFIG_PATH="${CONFIG_DIR}/appsettings.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 info() { echo "[==========$*==========]"; }
@@ -173,6 +177,21 @@ if [ ! -f "$APP_STAGE/wwwroot/conf/setting.json" ] && [ -f "$SCRIPT_DIR/conf/set
     cp "$SCRIPT_DIR/conf/setting.json" "$APP_STAGE/wwwroot/conf/setting.json"
 fi
 
+# 外部配置预置：优先取发布目录中的 appsettings.json（含本次发布的默认值），
+# 缺失时回退到仓库 api/appsettings.json；都缺失则预置空对象，
+# 未写的键仍由 /opt/delly-net/Koi/appsettings.json 提供默认值。
+mkdir -p "$STAGE$CONFIG_DIR"
+if [ -f "$APP_STAGE/appsettings.json" ]; then
+    install -m 0644 "$APP_STAGE/appsettings.json" "$STAGE$CONFIG_PATH"
+elif [ -f "$SCRIPT_DIR/../../api/appsettings.json" ]; then
+    warn "发布目录缺少 appsettings.json，使用仓库 api/appsettings.json 作为安装包默认配置。"
+    install -m 0644 "$SCRIPT_DIR/../../api/appsettings.json" "$STAGE$CONFIG_PATH"
+else
+    warn "发布目录缺少 appsettings.json，安装包将预置空配置 {}，运行时沿用程序目录默认值。"
+    printf '{}\n' > "$STAGE$CONFIG_PATH"
+    chmod 0644 "$STAGE$CONFIG_PATH"
+fi
+
 # unit 内容必须与 install.sh 写入的一致：WorkingDirectory 指向程序目录，
 # koi.db 与 wwwroot 才能按内容根目录解析。
 cat > "$STAGE$UNIT_PATH" <<EOF
@@ -224,8 +243,9 @@ Description: Koi Linux Web UI
  文件管理与在线文本编辑。
 EOF
 
-    # unit 视为配置文件：升级时保留本地修改。
+    # unit 与外部配置视为配置文件：升级时保留本地修改。
     printf '%s\n' "$UNIT_PATH" > "$STAGE/DEBIAN/conffiles"
+    printf '%s\n' "$CONFIG_PATH" >> "$STAGE/DEBIAN/conffiles"
 
     cat > "$STAGE/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
@@ -356,6 +376,9 @@ cp -a %{_koi_stage}/opt/delly-net/Koi/. %{buildroot}/opt/delly-net/Koi/
 install -d %{buildroot}%{_sysconfdir}/systemd/system
 install -m 0644 %{_koi_stage}%{_sysconfdir}/systemd/system/koi.service \
     %{buildroot}%{_sysconfdir}/systemd/system/koi.service
+install -d %{buildroot}%{_sysconfdir}/koi
+install -m 0644 %{_koi_stage}%{_sysconfdir}/koi/appsettings.json \
+    %{buildroot}%{_sysconfdir}/koi/appsettings.json
 
 %post
 if [ -d /run/systemd/system ]; then
@@ -377,6 +400,8 @@ fi
 
 %files
 %config(noreplace) %{_sysconfdir}/systemd/system/koi.service
+%dir %attr(0755,root,root) %{_sysconfdir}/koi
+%config(noreplace) %attr(0644,root,root) %{_sysconfdir}/koi/appsettings.json
 /opt/delly-net/Koi
 EOF
 

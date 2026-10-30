@@ -45,10 +45,11 @@ tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost w
 ## Layout
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
-  middleware, endpoints), `Data/` (EF Core context and entities), `Hosting/` (frontend static
-  files and SPA fallback), `Terminal/` (PTY P/Invoke, privileged helper process, session registry,
-  WebSocket endpoint), `Files/` (path validation, file helper process, operation service, REST
-  endpoints), `appsettings*.json`.
+  middleware, endpoints), `Configuration/` (Linux external config loading and auto-creation),
+  `Data/` (EF Core context and entities), `Hosting/` (frontend static files and SPA fallback),
+  `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
+  `Files/` (path validation, file helper process, operation service, REST endpoints),
+  `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
   types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth,
   workspace tab and editor tab state), `src/router/`, `src/views/` (`WorkspaceView.vue` shell plus
@@ -77,9 +78,10 @@ the publish directory `wwwroot`.
 
 `deploy/linux/publish.sh` copies the publish output into `/opt/delly-net/Koi`; `deploy/linux/install.sh`
 (run as root) registers that directory as the `koi.service` systemd unit — `WorkingDirectory` is the
-program directory so `koi.db` and `wwwroot` resolve there — then enables and starts/restarts it. The
-unit runs as root because `pam_unix` needs privileged access to the account database; terminal
-children do not inherit it — they drop to the logged-in user inside the PTY.
+program directory so `koi.db` and `wwwroot` resolve there — then enables and starts/restarts it. It
+also pre-creates `/etc/koi/appsettings.json` from the program directory copy without overwriting an
+existing file. The unit runs as root because `pam_unix` needs privileged access to the account
+database; terminal children do not inherit it — they drop to the logged-in user inside the PTY.
 
 `deploy/linux/package.sh [all|deb|rpm] [-p publish dir] [-o output dir] [dir]` packages the
 publish output (default `/project/delly-net/publish/Koi/files`) into `koi-<yyyyMMddHHmmss>.deb`
@@ -87,9 +89,10 @@ and `.rpm` in `<publish dir>/../packages`; the package version is the same times
 directory containing the `koi` executable is the publish dir, otherwise it is the output dir; the
 script re-execs under `bash` when invoked with `sh` (Debian's `dash`). Both packages install to
 `/opt/delly-net/Koi` plus `/etc/systemd/system/koi.service` (content must stay in sync with
-`install.sh`), enable and start the service, keep the unit as a conffile / `%config(noreplace)`,
-and never touch `koi.db`. The deb is built with `dpkg-deb` when present and otherwise assembled
-from `ar` + `tar`; rpm needs `rpmbuild` (a missing tool skips that format and exits non-zero).
+`install.sh`), enable and start the service, pre-seed `/etc/koi/appsettings.json` (kept as a
+conffile / `%config(noreplace)` so upgrades preserve local edits), and never touch `koi.db`. The deb
+is built with `dpkg-deb` when present and otherwise assembled from `ar` + `tar`; rpm needs
+`rpmbuild` (a missing tool skips that format and exits non-zero).
 
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
 TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.
@@ -208,6 +211,17 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   to 404 and returns `index.html` for GET/HEAD requests whose path has no extension, which supports
   Vue Router history mode while missing `.js`/`.css` files still return 404. `index.html` and
   `conf/setting.json` are served `no-cache`; `/assets/**` gets a one-year immutable cache.
+- External configuration: on Linux the app overlays `/etc/koi/appsettings.json` on the bundled
+  `appsettings.json` / `appsettings.{Environment}.json`. If the file is missing at startup it is
+  created from the bundled copy (directory `0755`, file `0644`, temp file + atomic rename) and then
+  loaded. The source is inserted after all JSON configuration files (including development user
+  secrets) but before environment variables and command line, so those still win. Creation failure
+  (for example a non-root `dotnet run`) only logs a warning; startup continues with the bundled
+  defaults. Non-Linux skips the external file entirely. Keys omitted from `/etc` fall back to the
+  bundled defaults, so the publish output must keep `appsettings.json`. `install.sh` and the
+  deb/rpm packages pre-create the file; it is a deb conffile / rpm `%config(noreplace)` and is
+  never overwritten by an upgrade. Reload-on-change is off because options are snapshotted at
+  startup. See `api/Configuration/KoiExternalConfigurationExtensions.cs`.
 - Runtime state lives in `api/koi.db` (SQLite, created with `EnsureCreated` — no migrations yet).
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers.
 - The SQLite provider does not translate `DateTimeOffset` comparisons, so `KoiDbContext`
