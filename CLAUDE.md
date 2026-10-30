@@ -208,14 +208,17 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - The UI is a separate SPA communicating with the API over HTTP and WebSocket. Keep any new
   endpoint and protocol contracts documented here.
 - Frontend layout: after login the app is a single workspace shell (`views/WorkspaceView.vue`,
-  route `/`) whose page header owns the brand, user name and logout. Below it a shared card tab bar
-  (`stores/workspace.ts`: keys `home` / `terminal` / `files` / `editor`) hosts the four modules as
-  panels. `首页` is the fixed entry tab and cannot be closed; the others are opened on demand
-  (home cards, or opening a text file from the file manager) and can be closed, and closing the
-  active tab returns to 首页. Tab state is in-memory only: it is not reflected in the URL, a
-  browser refresh lands on 首页, and logout resets it. Because `el-tabs` keeps every opened pane
-  mounted and only toggles visibility, switching tabs preserves module state (terminal WS/PTY,
-  current directory, editor tabs); closing a tab unmounts its panel and therefore closes that
+  route `/`) whose top bar owns the logo + title, the panel tabs and the user name + logout, so the
+  tab row no longer takes a separate line and the content area gains its height. The tabs are flat
+  (non-card) text tabs inside that bar. The `el-tabs` there is navigation only — its panes are
+  empty and `.el-tabs__content` is hidden; the four modules mount in the sibling `.panels`
+  container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor`). `首页` is
+  the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
+  a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
+  Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
+  logout resets it. A panel is mounted while its key is in `workspace.tabs` (`v-if`) and hidden with
+  `v-show` when inactive, so switching tabs preserves module state (terminal WS/PTY, current
+  directory, editor tabs) while closing a tab unmounts its panel and therefore closes that
   terminal. `/terminal`, `/files` and `/editor` are no longer routes — they fall through the
   catch-all to `/`. `TerminalView` still passes `active` to `TerminalPane` so a hidden terminal
   is refitted and focused when its tab becomes visible.

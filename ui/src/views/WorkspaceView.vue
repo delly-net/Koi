@@ -40,6 +40,11 @@ function onTabRemove(name: string | number): void {
   workspace.close(String(name) as WorkspaceTabKey)
 }
 
+/** 标签是否已打开：决定面板挂载，关闭标签即卸载面板（终端 WS/PTY 随之释放）。 */
+function hasTab(key: WorkspaceTabKey): boolean {
+  return workspace.tabs.includes(key)
+}
+
 async function handleLogout(): Promise<void> {
   await auth.logout()
   ElMessage.success('已退出登录')
@@ -54,27 +59,35 @@ async function handleLogout(): Promise<void> {
         <img src="/koi_48.png" alt="Koi" class="logo" />
         <span class="title">Koi Linux Web UI</span>
       </div>
+
+      <!-- 一级标签嵌入 logo 栏：这里只保留导航头，面板在下方 .panels 中挂载 -->
+      <el-tabs v-model="activeKey" class="header-tabs" @tab-remove="onTabRemove">
+        <el-tab-pane
+          v-for="key in workspace.tabs"
+          :key="key"
+          :label="tabLabel(key)"
+          :name="key"
+          :closable="key !== HOME_TAB"
+        />
+      </el-tabs>
+
       <div class="user">
         <el-tag type="success" effect="plain">{{ userName }}</el-tag>
         <el-button text @click="handleLogout">退出登录</el-button>
       </div>
     </el-header>
 
-    <!-- 共享一级标签栏：所有已打开模块同时挂载，切换仅改变显示，状态得以保留 -->
-    <el-tabs v-model="activeKey" type="card" class="tabs" @tab-remove="onTabRemove">
-      <el-tab-pane
-        v-for="key in workspace.tabs"
-        :key="key"
-        :label="tabLabel(key)"
-        :name="key"
-        :closable="key !== HOME_TAB"
-      >
-        <HomeView v-if="key === 'home'" />
-        <TerminalView v-else-if="key === 'terminal'" :active="activeKey === 'terminal'" />
-        <FilesView v-else-if="key === 'files'" />
-        <EditorView v-else />
-      </el-tab-pane>
-    </el-tabs>
+    <!-- 面板容器：按标签是否打开决定挂载，切换仅改变显示，状态得以保留 -->
+    <div class="panels">
+      <HomeView v-if="hasTab('home')" v-show="activeKey === 'home'" />
+      <TerminalView
+        v-if="hasTab('terminal')"
+        v-show="activeKey === 'terminal'"
+        :active="activeKey === 'terminal'"
+      />
+      <FilesView v-if="hasTab('files')" v-show="activeKey === 'files'" />
+      <EditorView v-if="hasTab('editor')" v-show="activeKey === 'editor'" />
+    </div>
   </div>
 </template>
 
@@ -90,14 +103,16 @@ async function handleLogout(): Promise<void> {
   display: flex;
   flex: none;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   height: 56px;
+  padding: 0 12px;
   background: #ffffff;
   border-bottom: 1px solid #e4e7ed;
 }
 
 .brand {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 10px;
 }
@@ -111,34 +126,50 @@ async function handleLogout(): Promise<void> {
 .title {
   font-size: 16px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 标签导航占用中间剩余空间；内容区隐藏，面板已移到 .panels 承载 */
+.header-tabs {
+  flex: 1;
+  min-width: 0;
+}
+
+.header-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.header-tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.header-tabs :deep(.el-tabs__content) {
+  display: none;
+}
+
+.header-tabs :deep(.el-tabs__item) {
+  height: 34px;
+  padding: 0 16px;
+  font-size: 14px;
+  line-height: 34px;
+}
+
+.header-tabs :deep(.el-tabs__nav-prev),
+.header-tabs :deep(.el-tabs__nav-next) {
+  height: 34px;
+  line-height: 34px;
 }
 
 .user {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 8px;
 }
 
-.tabs {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  padding: 6px 12px 0;
-}
-
-.tabs :deep(.el-tabs__header) {
-  flex: none;
-  margin: 0 0 6px;
-}
-
-.tabs :deep(.el-tabs__content) {
+.panels {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-.tabs :deep(.el-tab-pane) {
-  height: 100%;
 }
 </style>
