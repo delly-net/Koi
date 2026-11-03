@@ -92,7 +92,10 @@ script re-execs under `bash` when invoked with `sh` (Debian's `dash`). Both pack
 `install.sh`), enable and start the service, pre-seed `/etc/koi/appsettings.json` (kept as a
 conffile / `%config(noreplace)` so upgrades preserve local edits), and never touch `koi.db`. The deb
 is built with `dpkg-deb` when present and otherwise assembled from `ar` + `tar`; rpm needs
-`rpmbuild` (a missing tool skips that format and exits non-zero).
+`rpmbuild` (a missing tool skips that format and exits non-zero). The deb `Depends` lists the ICU
+runtime packages by release (`libicu76 | libicu74 | libicu72 | …`, overridable with
+`KOI_DEB_ICU_DEPENDS`) instead of `libicu | libicu-dev`: there is no `libicu` virtual package, so
+that alternative always resolved to `libicu-dev` and pulled development headers onto runtime hosts.
 
 Toolchain installed on the current dev machine: .NET SDK 10.0.401, Node v22.23.2, npm 10.9.8.
 TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScript 7.

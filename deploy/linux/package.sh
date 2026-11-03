@@ -38,6 +38,16 @@ CONFIG_DIR="/etc/koi"
 CONFIG_PATH="${CONFIG_DIR}/appsettings.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ICU 运行库依赖。.NET 在 Linux 上依赖系统 ICU 做全球化（缺少时进程启动即失败），
+# 但 Debian/Ubuntu 的 ICU 运行包名随发行版变化，且没有可用的 libicu 虚拟包：
+#   buster/19.10 libicu63、focal libicu66、bullseye libicu67、jammy libicu70、
+#   bookworm libicu72、noble libicu74、trixie libicu76
+# 因此按新到旧列出运行包，apt 会选第一个存在的。这里绝不能写 libicu-dev ——
+# 那是编译期头文件包，运行程序只需要运行库；旧版本用 `libicu | libicu-dev`
+# 会在所有发行版上都落到 libicu-dev 上，白白拉取开发包。
+# 目标发行版确定且不在列表内时，用 KOI_DEB_ICU_DEPENDS 覆盖；置空则不声明 ICU 依赖。
+DEB_ICU_DEPENDS="${KOI_DEB_ICU_DEPENDS-libicu76 | libicu74 | libicu72 | libicu70 | libicu67 | libicu66 | libicu63}"
+
 info() { echo "[==========$*==========]"; }
 warn() { echo "警告：$*" >&2; }
 die() { echo "错误：$*" >&2; exit 1; }
@@ -236,7 +246,7 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: $MAINTAINER
 Installed-Size: $size_kb
-Depends: libc6, libgcc-s1, libstdc++6, libpam0g, zlib1g, libssl3 | libssl3t64, libicu | libicu-dev
+Depends: libc6, libgcc-s1, libstdc++6, libpam0g, zlib1g, libssl3 | libssl3t64${DEB_ICU_DEPENDS:+, $DEB_ICU_DEPENDS}
 Homepage: https://github.com/delly-net/Koi
 Description: Koi Linux Web UI
  以浏览器方式管理 Linux 主机：使用系统账号登录，提供多个在线终端、
