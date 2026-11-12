@@ -243,7 +243,9 @@ public static class FileEndpoints
     private static async Task<IResult> UploadAsync(
         HttpContext context,
         string? path,
-        bool overwrite,
+        // 必须用可空类型：Minimal API 会把非可空且无默认值的参数当作必填查询参数，
+        // 首次上传（前端不传 overwrite）会在参数绑定阶段直接被拒为 400。
+        bool? overwrite,
         FileOperationService service,
         IOptions<FileOptions> optionsAccessor,
         CancellationToken cancellationToken)
@@ -292,7 +294,7 @@ public static class FileEndpoints
             {
                 Path = normalized,
                 NewName = name,
-                Overwrite = overwrite,
+                Overwrite = overwrite ?? false,
             },
             content,
             cancellationToken);
