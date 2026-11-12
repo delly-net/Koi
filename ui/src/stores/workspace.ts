@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
 /** 工作区一级标签：每个标签对应一个模块页面，标签状态仅保存在内存中。 */
-export type WorkspaceTabKey = 'home' | 'terminal' | 'files' | 'editor'
+export type WorkspaceTabKey = 'home' | 'terminal' | 'files' | 'editor' | 'docker'
 
 /** 标签元信息；首页固定常驻，其余标签按需打开并可关闭。 */
 export const WORKSPACE_TAB_TITLES: Record<WorkspaceTabKey, string> = {
@@ -10,6 +10,7 @@ export const WORKSPACE_TAB_TITLES: Record<WorkspaceTabKey, string> = {
   terminal: '终端',
   files: '文件管理',
   editor: '文本编辑',
+  docker: '容器管理',
 }
 
 /** 首页固定标签，不可关闭。 */

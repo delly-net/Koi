@@ -2,12 +2,14 @@ using System.Threading.RateLimiting;
 using Koi.Api.Auth;
 using Koi.Api.Configuration;
 using Koi.Api.Data;
+using Koi.Api.Docker;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Terminal;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 // Koi 的文件配置类与 System.IO.FileOptions 同名，这里显式指定。
 using FileOptions = Koi.Api.Files.FileOptions;
 
@@ -53,10 +55,13 @@ builder.Services.Configure<TerminalOptions>(
     builder.Configuration.GetSection(TerminalOptions.SectionName));
 builder.Services.Configure<FileOptions>(
     builder.Configuration.GetSection(FileOptions.SectionName));
+builder.Services.Configure<DockerOptions>(
+    builder.Configuration.GetSection(DockerOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
 builder.Services.AddSingleton<FileOperationService>();
+builder.Services.AddSingleton<DockerCommandRunner>();
 
 // 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
 var fileOptions = builder.Configuration
@@ -132,19 +137,21 @@ app.UseWebSockets(new WebSocketOptions
     KeepAliveInterval = TimeSpan.FromSeconds(30),
 });
 
-app.MapGet("/api/health", () => Results.Ok(new
+app.MapGet("/api/health", (IOptions<DockerOptions> dockerOptions) => Results.Ok(new
 {
     status = "ok",
     platform = OperatingSystem.IsLinux() ? "linux" : "other",
     pamAvailable = OperatingSystem.IsLinux(),
     terminalAvailable = OperatingSystem.IsLinux(),
     fileAvailable = OperatingSystem.IsLinux(),
+    dockerAvailable = DockerCommandRunner.IsAvailable(dockerOptions.Value),
     timestamp = DateTimeOffset.UtcNow,
 }));
 
 app.MapAuthEndpoints();
 app.MapTerminalEndpoints();
 app.MapFileEndpoints();
+app.MapDockerEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();

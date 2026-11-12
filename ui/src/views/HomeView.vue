@@ -12,7 +12,7 @@ const userName = computed(() => auth.user?.userName ?? '')
   <div class="home-view">
     <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
       <template #extra>
-        <p class="hint">终端、文件管理与文本编辑都在工作区标签中打开，可自由切换。</p>
+        <p class="hint">终端、文件管理、文本编辑与容器管理都在工作区标签中打开，可自由切换。</p>
       </template>
     </el-result>
 
@@ -33,6 +33,12 @@ const userName = computed(() => auth.user?.userName ?? '')
         <template #header>文本编辑</template>
         <p>多标签在线编辑 UTF-8 文本文件；通常从文件管理的【编辑文本】或文件名称进入。</p>
         <el-button type="primary" class="module-action" @click="workspace.open('editor')">打开文本编辑</el-button>
+      </el-card>
+
+      <el-card class="module-card" shadow="hover">
+        <template #header>容器管理</template>
+        <p>通过 docker 命令查看与管理容器、镜像与资源占用；仅 docker 组成员可用，手动刷新数据。</p>
+        <el-button type="primary" class="module-action" @click="workspace.open('docker')">打开容器管理</el-button>
       </el-card>
     </div>
   </div>

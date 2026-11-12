@@ -19,11 +19,12 @@ are implemented.
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
-  read/write over REST, and static hosting of the built SPA from `wwwroot` with history-mode
-  fallback.
+  read/write over REST, docker-CLI-backed container/image management restricted to configured
+  groups, and static hosting of the built SPA from `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page and a multi-tab text editor page.
+  multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page and a
+  container manager page.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -49,12 +50,13 @@ tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost w
   `Data/` (EF Core context and entities), `Hosting/` (frontend static files and SPA fallback),
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, file helper process, operation service, REST endpoints),
-  `appsettings*.json`.
-- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol and file API
-  types), `src/config/` (runtime config incl. text file associations), `src/stores/` (Pinia auth,
-  workspace tab and editor tab state), `src/router/`, `src/views/` (`WorkspaceView.vue` shell plus
-  the home / terminal / files / editor panels), `src/components/terminal/` (xterm.js pane),
-  `src/components/files/` (per-directory `FileBrowserPane` used by the file manager's inner tabs).
+  `Docker/` (docker CLI runner, group authorization guard, REST endpoints), `appsettings*.json`.
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API and
+  docker API types), `src/config/` (runtime config incl. text file associations), `src/stores/`
+  (Pinia auth, workspace tab and editor tab state), `src/router/`, `src/views/`
+  (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker panels),
+  `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
+  `FileBrowserPane` used by the file manager's inner tabs).
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -144,8 +146,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
   no `forkpty`, no libutil, no C toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
-  `fileAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
-  `GET /api/terminal/ws`, and the `/api/files/*` group described below; errors use ProblemDetails.
+  `fileAvailable` / `dockerAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`,
+  `GET /api/auth/me`, `GET /api/terminal/ws`, and the `/api/files/*` and `/api/docker/*` groups
+  described below; errors use ProblemDetails.
   Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
@@ -207,6 +210,38 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   pipe and the operation only "finishes" when the timeout fires (this used to surface as a spurious
   504 when loading directories with a few hundred entries). Upload and download timeouts are
   idle-based and re-armed on every chunk, so a slow but active client is not killed by a wall clock.
+- Docker management runs the docker CLI from the main process (`Docker/DockerCommandRunner.cs`)
+  through `Process.Start` + `ArgumentList` — never a shell, so user input is never concatenated
+  into a command line. Only a fixed whitelist of subcommands executes (`ps`, `inspect`, `logs`,
+  `stats`, `images`, `pull`, `rmi`, `image prune`, `rm`, `start`/`stop`/`restart`/`pause`/
+  `unpause`). stdout/stderr are read concurrently with a byte cap (`MaxOutputBytes` /
+  `MaxLogBytes`); hitting the cap kills the process tree so the child cannot block on an unread
+  pipe, and the step timeout does the same. `DOCKER_CLI_HINTS=false`, `LANG=C` and `LC_ALL=C` are
+  set for stable output, and container/image list, logs and stats are parsed from
+  `--format '{{json .}}'` output.
+- Docker authorization: every `/api/docker/**` endpoint requires a session and membership in
+  `Koi:Docker:AllowedGroups` (default `["docker"]`); membership is resolved with
+  `id -nG -- <user>` so NSS/LDAP groups count, and non-members get 403. Access to the Docker
+  socket is equivalent to host root, so the service account must be trusted and the UI states
+  this explicitly. Read endpoints are safe; pull/prune/remove are available to every allowed user
+  (there is no finer-grained role).
+- Docker API (`/api/docker`, session cookie required; non-Linux, `Koi:Docker:Enabled=false` or a
+  missing docker executable → 503; non-member → 403): `GET /status`, `GET /containers`,
+  `GET /containers/{id}`, `POST /containers/{id}/{start|stop|restart|pause|unpause}`,
+  `DELETE /containers/{id}?force=&volumes=`, `GET /containers/{id}/logs?tail=&timestamps=`,
+  `GET /stats`, `GET /images`, `POST /images/pull` `{reference}`, `POST /images/prune`,
+  `DELETE /images/{id}?force=`. Container ids/names are validated against
+  `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and image references against
+  `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$`. Errors: 400 invalid input, 403 docker permission,
+  404 missing container/image, 409 conflict (image in use), 413 output too large, 503 daemon or
+  CLI unavailable, 504 timeout. `docker logs` is a snapshot bounded by
+  `LogTailDefault`/`LogTailMax`, and pull runs with `--quiet`.
+- Docker config keys: `Koi:Docker:Enabled`, `DockerPath` (empty = auto-detect
+  `/usr/bin/docker`, `/usr/local/bin/docker`, `/bin/docker`), `AllowedGroups`,
+  `CommandTimeoutSeconds` (60), `PullTimeoutSeconds` (600), `MaxOutputBytes` (4 MiB),
+  `MaxLogBytes` (2 MiB), `LogTailDefault` (500), `LogTailMax` (5000). The deployment account (the
+  `koi.service` user) must be a member of the configured group or the module returns 403 for
+  everyone.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
   content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is
@@ -241,8 +276,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the four modules mount in the sibling `.panels`
-  container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor`). `首页` is
+  empty and `.el-tabs__content` is hidden; the five modules mount in the sibling `.panels`
+  container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
+  `docker`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
   a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
@@ -260,10 +296,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `.xterm-screen` height with the `.xterm` client height and drops rows (never adds) until nothing
   overflows, and the pane is refitted once `document.fonts.ready` resolves because font metrics set
   the cell height. Hidden panes (size < 24 px) are still skipped.
-- The 首页 panel (`views/HomeView.vue`) shows three module cards whose entry buttons share one
-  style: all `type="primary"`, full width of the card body, and pinned to the card bottom
-  (`p { flex: 1 }` plus a column flex body) so the three buttons sit on the same horizontal line
-  even though the descriptions differ in length. Keep new home cards on the same pattern.
+- The 首页 panel (`views/HomeView.vue`) shows four module cards (terminal / files / editor /
+  docker) whose entry buttons share one style: all `type="primary"`, full width of the card body,
+  and pinned to the card bottom (`p { flex: 1 }` plus a column flex body) so the four buttons sit
+  on the same horizontal line even though the descriptions differ in length. Keep new home cards
+  on the same pattern.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
@@ -279,6 +316,15 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   loses it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
   lets the user overwrite (`expectedModifiedAt=0`) or reload. The editor is a plain monospace
   textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow.
+- The 容器管理 tab (`ui/src/views/DockerView.vue`, workspace key `docker`) has three inner tabs:
+  容器 / 镜像 / 系统. Data is fetched on mount and only on the manual `刷新` button — there is no
+  polling timer; refreshing reloads the status plus the visible inner tab. Container rows collapse
+  every operation (start / stop / restart / pause / unpause / logs / detail / delete) into one
+  `操作` dropdown whose items are disabled according to `state`; logs open in a dialog with a tail
+  selector (snapshot, not follow) and detail opens in a drawer fed by `docker inspect`. The image
+  tab offers pull by reference and dangling-image prune; the system tab shows `docker version` /
+  `docker info` fields plus a `docker stats --no-stream` table. 403 (not in an allowed group) and
+  503 (docker unavailable) render as persistent alerts instead of toasts.
 
 ## Knowledge base
 
