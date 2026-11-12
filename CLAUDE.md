@@ -213,8 +213,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - Docker management runs the docker CLI from the main process (`Docker/DockerCommandRunner.cs`)
   through `Process.Start` + `ArgumentList` — never a shell, so user input is never concatenated
   into a command line. Only a fixed whitelist of subcommands executes (`ps`, `inspect`, `logs`,
-  `stats`, `images`, `pull`, `rmi`, `image prune`, `rm`, `start`/`stop`/`restart`/`pause`/
-  `unpause`). stdout/stderr are read concurrently with a byte cap (`MaxOutputBytes` /
+  `stats`, `images`, `pull`, `tag`, `image inspect`, `rmi`, `image prune`, `rm`,
+  `start`/`stop`/`restart`/`pause`/`unpause`). stdout/stderr are read concurrently with a byte cap (`MaxOutputBytes` /
   `MaxLogBytes`); hitting the cap kills the process tree so the child cannot block on an unread
   pipe, and the step timeout does the same. `DOCKER_CLI_HINTS=false`, `LANG=C` and `LC_ALL=C` are
   set for stable output, and container/image list, logs and stats are parsed from
@@ -232,18 +232,24 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   missing docker executable → 503; non-member → 403): `GET /status`, `GET /containers`,
   `GET /containers/{id}`, `POST /containers/{id}/{start|stop|restart|pause|unpause}`,
   `DELETE /containers/{id}?force=&volumes=`, `GET /containers/{id}/logs?tail=&timestamps=`,
-  `GET /stats`, `GET /images`, `POST /images/pull` `{reference}`, `POST /images/prune`,
-  `DELETE /images/{id}?force=`. Container ids/names are validated against
-  `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and image references against
+  `GET /stats`, `GET /images`, `POST /images/pull` `{reference}`, `POST /images/tag`
+  `{source,target}`, `POST /images/prune`, `DELETE /images/{id}?force=`. Container ids/names are
+  validated against `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and image references against
   `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$`. Errors: 400 invalid input, 403 docker permission,
-  404 missing container/image, 409 conflict (image in use), 413 output too large, 503 daemon or
-  CLI unavailable, 504 timeout. Image deletion defaults to a plain `docker rmi`; when it returns
+  404 missing container/image, 409 conflict (image in use or existing tag), 413 output too large,
+  503 daemon or CLI unavailable, 504 timeout. Image deletion defaults to a plain `docker rmi`; when it returns
   409 the UI asks for a second confirmation and retries with `force=true` (`docker rmi -f`). The
   backend answers the common image conflicts with Chinese details instead of raw CLI stderr
   (referenced by multiple repositories, used by a running container, used by a stopped
   container); forced deletion removes every repository tag of that image, and an image used by a
   running container cannot be removed even with `-f`. `docker logs` is a snapshot bounded by
   `LogTailDefault`/`LogTailMax`, and pull runs with `--quiet`.
+  `POST /images/tag` runs `docker tag` only after `docker image inspect` confirms the target
+  reference does not exist; an existing target (even one pointing at the same image) is rejected
+  with 409 and has no force path, so the user must remove the old tag first. The source is
+  normally the image ID, which also lets `<none>` rows be tagged, and only local references are
+  created (no push). The inspect/tag pair is not atomic: a tag created in that window can still be
+  overwritten.
 - Docker config keys: `Koi:Docker:Enabled`, `DockerPath` (empty = auto-detect
   `/usr/bin/docker`, `/usr/local/bin/docker`, `/bin/docker`), `AllowedGroups`,
   `CommandTimeoutSeconds` (60), `PullTimeoutSeconds` (600), `MaxOutputBytes` (4 MiB),
@@ -343,7 +349,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   every operation (start / stop / restart / pause / unpause / logs / detail / delete) into one
   `操作` dropdown whose items are disabled according to `state`; logs open in a dialog with a tail
   selector (snapshot, not follow) and detail opens in a drawer fed by `docker inspect`. The image
-  tab offers pull by reference, dangling-image prune and per-row delete. Delete first runs without
+  tab offers pull by reference, dangling-image prune and a per-row `操作` dropdown (`打标签` /
+  `删除`). `打标签` takes a new reference and runs `docker tag` from the row's image ID (so
+  `<none>` rows work too); the backend first runs `docker image inspect` on the target and rejects
+  an existing tag with 409 instead of overwriting it, and there is no force override. Delete first runs without
   `-f`; a 409 conflict (multiple repository tags or container references) opens a `强制删除镜像`
   confirmation and retries with `force=true`, with a message that forced deletion removes all of the
   image's repository tags. Images used by a running container only show the guidance message (stop

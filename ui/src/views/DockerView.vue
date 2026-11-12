@@ -14,6 +14,7 @@ import {
   pullImage,
   removeContainer,
   removeImage,
+  tagImage,
   type DockerAction,
   type DockerContainer,
   type DockerContainerDetail,
@@ -374,6 +375,98 @@ async function submitPull(): Promise<void> {
   }
 }
 
+const tagVisible = ref(false)
+const tagLoading = ref(false)
+const tagRow = ref<DockerImage | null>(null)
+const tagTarget = ref('')
+
+const tagSourceLabel = computed(() => {
+  if (!tagRow.value) {
+    return ''
+  }
+
+  const row = tagRow.value
+  const suffix = row.tag && row.tag !== '<none>' ? `:${row.tag}` : ''
+  return `${row.repository}${suffix}`
+})
+
+function resetTagForm(): void {
+  tagRow.value = null
+  tagTarget.value = ''
+}
+
+function openTag(row: DockerImage): void {
+  tagRow.value = row
+  tagTarget.value = row.repository && row.repository !== '<none>' ? `${row.repository}:` : ''
+  tagVisible.value = true
+}
+
+/** 目标引用规范化：末段没有标签时 Docker 默认使用 latest。 */
+function normalizeImageReference(reference: string): string {
+  const trimmed = reference.trim()
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf('/') + 1)
+  return lastSegment.includes(':') ? trimmed : `${trimmed}:latest`
+}
+
+/** 提交前在已加载列表中查找同名标签；后端仍会做权威预检。 */
+function findImageByReference(reference: string): DockerImage | undefined {
+  const normalized = normalizeImageReference(reference)
+  return images.value.find((item) => {
+    const suffix = item.tag && item.tag !== '<none>' ? `:${item.tag}` : ''
+    return `${item.repository}${suffix}` === normalized
+  })
+}
+
+async function submitTag(): Promise<void> {
+  const row = tagRow.value
+  const target = tagTarget.value.trim()
+  if (!row) {
+    return
+  }
+
+  if (!target) {
+    ElMessage.warning('请输入目标标签，例如 myapp:1.0.0')
+    return
+  }
+
+  if (target.endsWith(':') || target.endsWith('/') || target.includes('@')) {
+    ElMessage.warning('目标标签格式不合法，请使用「仓库名[:标签]」形式')
+    return
+  }
+
+  if (findImageByReference(target)) {
+    ElMessage.error(
+      `目标标签 ${normalizeImageReference(target)} 已存在，请先删除旧标签或使用其他标签名`,
+    )
+    return
+  }
+
+  tagLoading.value = true
+  try {
+    await tagImage(row.id, target)
+    ElMessage.success(`已为镜像创建标签 ${normalizeImageReference(target)}`)
+    tagVisible.value = false
+    resetTagForm()
+    await loadImages()
+    await loadStatus()
+  } catch (error) {
+    showError(error)
+  } finally {
+    tagLoading.value = false
+  }
+}
+
+function onImageCommand(command: string, row: DockerImage): void {
+  if (command === 'tag') {
+    openTag(row)
+    return
+  }
+
+  if (command === 'delete') {
+    void deleteImage(row)
+  }
+}
+
 type ImageDeleteOutcome = 'deleted' | 'forced' | 'cancelled'
 
 /** 普通删除；遇到 409 冲突时提示用户确认后以 force 重试。 */
@@ -656,15 +749,22 @@ onMounted(() => {
               <el-table-column prop="createdAt" label="创建时间" width="200" show-overflow-tooltip />
               <el-table-column label="操作" width="96" fixed="right" align="center">
                 <template #default="{ row }">
-                  <el-button
-                    size="small"
-                    type="danger"
-                    plain
-                    :loading="busyId === row.id"
-                    @click="deleteImage(row)"
+                  <el-dropdown
+                    trigger="click"
+                    @command="(command: string) => onImageCommand(command, row)"
                   >
-                    删除
-                  </el-button>
+                    <el-button size="small" :icon="MoreFilled" :loading="busyId === row.id">
+                      操作
+                    </el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="tag">打标签</el-dropdown-item>
+                        <el-dropdown-item command="delete" divided class="danger-item">
+                          删除
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
                 </template>
               </el-table-column>
             </el-table>
@@ -808,6 +908,30 @@ onMounted(() => {
       <template #footer>
         <el-button @click="pullVisible = false">取消</el-button>
         <el-button type="primary" :loading="pullLoading" @click="submitPull">拉取</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="tagVisible" title="打标签" width="520px" @closed="resetTagForm">
+      <el-form label-width="80px">
+        <el-form-item label="源镜像">
+          <span class="tag-source">{{ tagSourceLabel || '—' }}</span>
+        </el-form-item>
+        <el-form-item label="目标标签">
+          <el-input
+            v-model="tagTarget"
+            placeholder="例如 myapp:1.0.0"
+            maxlength="255"
+            clearable
+            @keyup.enter="submitTag"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="hint">
+        格式为「仓库名[:标签]」，省略标签时 Docker 默认使用 latest；目标标签已存在时会被拒绝，请先删除旧标签。
+      </div>
+      <template #footer>
+        <el-button @click="tagVisible = false">取消</el-button>
+        <el-button type="primary" :loading="tagLoading" @click="submitTag">确定</el-button>
       </template>
     </el-dialog>
   </div>
@@ -983,6 +1107,12 @@ onMounted(() => {
 
 .detail-labels {
   margin-top: 16px;
+}
+
+.tag-source {
+  color: #303133;
+  font-family: Consolas, 'Courier New', monospace;
+  word-break: break-all;
 }
 
 .detail-block {

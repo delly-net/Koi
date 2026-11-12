@@ -13,6 +13,7 @@ namespace Koi.Api.Docker;
 /// <remarks>
 /// 所有操作都通过外部 <c>docker</c> 命令行完成，子命令固定白名单；用户输入仅作为容器标识、
 /// 镜像引用或数值参数，且经过白名单校验。接口不会执行任意 docker 子命令或 shell。
+/// 镜像打标签使用 <c>tag</c>，目标标签冲突预检使用 <c>image inspect</c>。
 /// </remarks>
 public static class DockerEndpoints
 {
@@ -53,6 +54,7 @@ public static class DockerEndpoints
 
         group.MapGet("/images", ListImagesAsync);
         group.MapPost("/images/pull", PullImageAsync);
+        group.MapPost("/images/tag", TagImageAsync);
         group.MapPost("/images/prune", PruneImagesAsync);
         group.MapDelete("/images/{id}", RemoveImageAsync);
 
@@ -494,6 +496,75 @@ public static class DockerEndpoints
         return Results.Ok(new DockerPullResponse(true, request.Reference, result.StandardOutput.Trim()));
     }
 
+    /// <summary>为镜像打标签（<c>docker tag</c>）；目标标签已存在时直接拒绝，不覆盖。</summary>
+    /// <remarks>
+    /// <c>docker tag</c> 本身会静默覆盖同名标签，所以先执行 <c>docker image inspect</c> 预检。
+    /// 预检与打标签之间存在极小的竞态窗口，标签若在此期间被创建仍可能被覆盖。
+    /// </remarks>
+    private static async Task<IResult> TagImageAsync(
+        HttpContext context,
+        DockerTagRequest? request,
+        DockerCommandRunner runner,
+        IOptions<DockerOptions> optionsAccessor,
+        CancellationToken cancellationToken)
+    {
+        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var source = request?.Source?.Trim() ?? string.Empty;
+        var target = request?.Target?.Trim() ?? string.Empty;
+        if (!IsValidImageReference(source) || !IsValidImageReference(target))
+        {
+            return BadRequest(
+                "镜像引用不合法",
+                "源镜像与目标标签都不能为空，只能包含字母、数字、下划线、点、冒号、斜杠、@ 和短横线，且不得以短横线开头。");
+        }
+
+        // 目标必须是「仓库名[:标签]」，摘要引用或以冒号、斜杠结尾都不是合法的标签目标。
+        if (target.EndsWith(':') || target.EndsWith('/') || target.Contains('@'))
+        {
+            return BadRequest(
+                "目标标签不合法",
+                "目标标签格式应为「仓库名[:标签]」，不能是摘要引用，也不能以冒号或斜杠结尾。");
+        }
+
+        var timeout = CommandTimeout(settings);
+        var limit = MaxOutput(settings);
+
+        var targetResult = await runner.RunAsync(
+            ["image", "inspect", "--format", "{{.Id}}", target],
+            timeout,
+            limit,
+            cancellationToken);
+        if (targetResult.Ok)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "目标标签已存在",
+                detail: "该标签已存在，请先删除旧标签或使用其他标签名。");
+        }
+
+        // 只有“镜像不存在”才继续打标签，其它失败（权限、守护进程、超时等）原样映射。
+        var stderr = targetResult.StandardError;
+        if (!stderr.Contains("no such", StringComparison.OrdinalIgnoreCase) &&
+            !stderr.Contains("not found", StringComparison.OrdinalIgnoreCase))
+        {
+            return ToResult(targetResult, "检查目标标签");
+        }
+
+        var result = await runner.RunAsync(
+            ["tag", source, target],
+            timeout,
+            limit,
+            cancellationToken);
+        return result.Ok
+            ? Results.Ok(new DockerTagResponse(true, source, target))
+            : ToResult(result, "打标签");
+    }
+
     /// <summary>删除镜像。</summary>
     private static async Task<IResult> RemoveImageAsync(
         HttpContext context,
@@ -914,5 +985,9 @@ public sealed record DockerImageSummary(
 public sealed record DockerPullRequest(string? Reference);
 
 public sealed record DockerPullResponse(bool Ok, string Reference, string Output);
+
+public sealed record DockerTagRequest(string? Source, string? Target);
+
+public sealed record DockerTagResponse(bool Ok, string Source, string Target);
 
 public sealed record DockerPruneResponse(bool Ok, string Output);

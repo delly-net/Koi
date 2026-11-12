@@ -114,6 +114,12 @@ export interface DockerPruneResponse {
   output: string
 }
 
+export interface DockerTagResponse {
+  ok: boolean
+  source: string
+  target: string
+}
+
 /** 容器启停类动作（固定白名单，与后端一致）。 */
 export type DockerAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause'
 
@@ -185,6 +191,13 @@ export function pullImage(reference: string): Promise<DockerPullResponse> {
   return request<DockerPullResponse>('/api/docker/images/pull', {
     method: 'POST',
     body: JSON.stringify({ reference }),
+  })
+}
+
+export function tagImage(source: string, target: string): Promise<DockerTagResponse> {
+  return request<DockerTagResponse>('/api/docker/images/tag', {
+    method: 'POST',
+    body: JSON.stringify({ source, target }),
   })
 }
 
