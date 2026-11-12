@@ -314,6 +314,19 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `打开` / `编辑文本` or by clicking the name. Missing or invalid rules fall back to a built-in
   list; an explicit empty array means “no text files”. Production deploys replace
   `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
+- Login page persistence (`ui/src/views/LoginView.vue` + `ui/src/utils/rememberedLogin.ts`): after a
+  successful login the user name is always stored in `localStorage['koi.login.lastUserName']` and
+  prefilled next time. The `记住密码` checkbox, when checked, stores the password as an encrypted
+  JSON record in `localStorage['koi.login.rememberedPassword']`:
+  `{ v: 1, alg: "AES-GCM", salt, iv, data }` using Web Crypto AES-GCM with a PBKDF2-SHA256 key
+  (210000 iterations) derived from a built-in app passphrase plus a random per-record salt; it is
+  decrypted on mount and prefilled (checkbox re-checked). A successful login with the checkbox
+  unchecked deletes the stored record; logout deliberately keeps both keys. Because the key
+  material also lives in the frontend bundle this is obfuscation-grade protection, not a secret —
+  same-origin script can still decrypt it, so never call it end-to-end secrecy. `crypto.subtle`
+  only exists in secure contexts (HTTPS or localhost); on plain HTTP the module falls back to
+  XOR + Base64 with `alg: "xor"` so the feature still works. All `localStorage` access is
+  best-effort and must never block login; malformed records are deleted instead of throwing.
 - The text editor (`ui/src/views/EditorView.vue`, the `editor` workspace tab) keeps its tabs in
   `src/stores/editor.ts`, so switching workspace tabs preserves unsaved content; a browser refresh
   loses it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409

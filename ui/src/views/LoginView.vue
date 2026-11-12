@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { ApiError } from '@/api/http'
 import { useAuthStore } from '@/stores/auth'
+import {
+  clearRememberedPassword,
+  getLastUserName,
+  loadRememberedPassword,
+  saveLastUserName,
+  saveRememberedPassword,
+} from '@/utils/rememberedLogin'
 
 const router = useRouter()
 const route = useRoute()
@@ -14,6 +21,22 @@ const formRef = ref<FormInstance>()
 const form = reactive({
   userName: '',
   password: '',
+})
+/** 勾选后登录成功才写入本地密码密文。 */
+const rememberPassword = ref(false)
+
+onMounted(async () => {
+  const lastUserName = getLastUserName()
+  if (lastUserName && !form.userName) {
+    form.userName = lastUserName
+  }
+
+  // 解密失败会在工具内清除损坏记录并返回 null，不阻塞登录页。
+  const savedPassword = await loadRememberedPassword()
+  if (savedPassword && !form.password) {
+    form.password = savedPassword
+    rememberPassword.value = true
+  }
 })
 
 const rules: FormRules<typeof form> = {
@@ -28,7 +51,21 @@ async function handleSubmit(): Promise<void> {
   }
 
   try {
-    await auth.login(form.userName.trim(), form.password)
+    const userName = form.userName.trim()
+    await auth.login(userName, form.password)
+
+    // 登录成功后才保存；本地存储失败不得影响登录跳转。
+    saveLastUserName(userName)
+    try {
+      if (rememberPassword.value) {
+        await saveRememberedPassword(form.password)
+      } else {
+        clearRememberedPassword()
+      }
+    } catch (error) {
+      console.warn('[登录] 记住密码处理失败：', error)
+    }
+
     ElMessage.success('登录成功')
 
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
@@ -80,12 +117,18 @@ async function handleSubmit(): Promise<void> {
           />
         </el-form-item>
 
+        <div class="login-options">
+          <el-checkbox v-model="rememberPassword">记住密码</el-checkbox>
+        </div>
+
         <el-button type="primary" native-type="submit" :loading="auth.loading" class="login-button">
           登录
         </el-button>
       </el-form>
 
-      <p class="login-tip">认证由 Linux PAM 完成，Koi 不保存明文密码。</p>
+      <p class="login-tip">
+        认证由 Linux PAM 完成；勾选「记住密码」后，密码会加密为字符串并仅保存在本机浏览器。
+      </p>
     </el-card>
   </div>
 </template>
@@ -128,6 +171,12 @@ async function handleSubmit(): Promise<void> {
   margin: 4px 0 0;
   color: #8a919f;
   font-size: 13px;
+}
+
+.login-options {
+  display: flex;
+  align-items: center;
+  margin: -6px 0 18px;
 }
 
 .login-button {
