@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using Koi.Api.Terminal;
 
 namespace Koi.Api.Docker;
 
@@ -10,6 +11,10 @@ namespace Koi.Api.Docker;
 /// Docker socket 的访问权限等同于宿主 root，因此不能仅凭「已登录」放行。
 /// 组成员通过系统 <c>id -nG -- &lt;user&gt;</c> 读取（尊重 NSS/LDAP 配置），
 /// 无法读取时按 503 拒绝而不是默认放行。
+/// <para>
+/// 例外：uid 为 0 的账号（root）通过 <c>getpwnam_r</c> 解析后直接放行——它已等同于宿主管理员，
+/// 即使 <c>AllowedGroups</c> 为空数组也不受该列表限制；普通账号仍按组成员校验。
+/// </para>
 /// </remarks>
 public static class DockerAccessGuard
 {
@@ -56,6 +61,13 @@ public static class DockerAccessGuard
                 StatusCodes.Status403Forbidden,
                 "无法识别账号",
                 "当前登录账号名不合法，无法校验 Docker 访问权限。"), userName);
+        }
+
+        // root（uid 0）等同宿主管理员，始终允许访问容器管理，即使 AllowedGroups 为空。
+        // 以解析出的 uid 判断而不是用户名，避免别名账号被误放行。
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is { Uid: 0 })
+        {
+            return (null, userName);
         }
 
         if (settings.AllowedGroups is not { Length: > 0 })

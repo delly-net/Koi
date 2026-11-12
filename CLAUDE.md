@@ -221,7 +221,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `--format '{{json .}}'` output.
 - Docker authorization: every `/api/docker/**` endpoint requires a session and membership in
   `Koi:Docker:AllowedGroups` (default `["docker"]`); membership is resolved with
-  `id -nG -- <user>` so NSS/LDAP groups count, and non-members get 403. Access to the Docker
+  `id -nG -- <user>` so NSS/LDAP groups count, and non-members get 403. The exception is uid 0
+  (root): it is resolved through `getpwnam_r` and always allowed, even when `AllowedGroups` is
+  empty — root already equals the host administrator, and the list only constrains ordinary
+  accounts. This bypass runs after the enabled/platform/docker-availability checks. Access to the Docker
   socket is equivalent to host root, so the service account must be trusted and the UI states
   this explicitly. Read endpoints are safe; pull/prune/remove are available to every allowed user
   (there is no finer-grained role).

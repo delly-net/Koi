@@ -4,6 +4,7 @@ namespace Koi.Api.Docker;
 /// <remarks>
 /// Docker 访问等同于宿主 root 权限（可挂载宿主目录），因此默认只允许 <c>docker</c> 组成员使用。
 /// 服务进程以服务账号（当前部署为 root）执行 <c>docker</c> 命令，登录用户的权限边界由组成员校验保证。
+/// 例外：uid 为 0 的账号（root）本身即宿主管理员，解析出 uid 0 后直接放行，不受 <see cref="AllowedGroups"/> 限制。
 /// </remarks>
 public sealed class DockerOptions
 {
@@ -20,7 +21,7 @@ public sealed class DockerOptions
 
     /// <summary>
     /// 允许访问容器管理的系统组名。登录用户必须属于其中至少一个组，否则返回 403。
-    /// 空数组表示拒绝所有用户。
+    /// 空数组表示拒绝所有普通用户；uid 0（root）不受该列表限制，始终放行。
     /// </summary>
     public string[] AllowedGroups { get; set; } = ["docker"];
 
