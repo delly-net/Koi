@@ -374,13 +374,54 @@ async function submitPull(): Promise<void> {
   }
 }
 
+type ImageDeleteOutcome = 'deleted' | 'forced' | 'cancelled'
+
+/** 普通删除；遇到 409 冲突时提示用户确认后以 force 重试。 */
+async function removeImageWithForceConfirm(
+  row: DockerImage,
+  name: string,
+): Promise<ImageDeleteOutcome> {
+  try {
+    await removeImage(row.id, false)
+    return 'deleted'
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 409) {
+      throw error
+    }
+
+    // 运行中容器占用的镜像即使 -f 也无法删除，直接给出处理建议。
+    if (error.message === '镜像正在被容器使用') {
+      showError(error)
+      return 'cancelled'
+    }
+
+    const reason = error.detail ?? error.message
+    try {
+      await ElMessageBox.confirm(
+        `镜像 ${name} 无法直接删除：${reason} 强制删除会同时移除该镜像的所有仓库标签，且不可恢复，是否继续？`,
+        '强制删除镜像',
+        {
+          type: 'warning',
+          confirmButtonText: '强制删除',
+          cancelButtonText: '取消',
+        },
+      )
+    } catch {
+      return 'cancelled'
+    }
+
+    await removeImage(row.id, true)
+    return 'forced'
+  }
+}
+
 async function deleteImage(row: DockerImage): Promise<void> {
   const suffix = row.tag && row.tag !== '<none>' ? `:${row.tag}` : ''
   const name = `${row.repository}${suffix}`
 
   try {
     await ElMessageBox.confirm(
-      `确认删除镜像 ${name}？若镜像仍被容器占用将删除失败。`,
+      `确认删除镜像 ${name}？若镜像被多个仓库标签或容器引用，将提示是否强制删除。`,
       '删除镜像',
       {
         type: 'warning',
@@ -394,8 +435,12 @@ async function deleteImage(row: DockerImage): Promise<void> {
 
   busyId.value = row.id
   try {
-    await removeImage(row.id, false)
-    ElMessage.success('镜像已删除')
+    const outcome = await removeImageWithForceConfirm(row, name)
+    if (outcome === 'cancelled') {
+      return
+    }
+
+    ElMessage.success(outcome === 'forced' ? '镜像已强制删除' : '镜像已删除')
     await loadImages()
     await loadStatus()
   } catch (error) {

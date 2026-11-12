@@ -527,9 +527,40 @@ public static class DockerEndpoints
             CommandTimeout(settings),
             MaxOutput(settings),
             cancellationToken);
-        return result.Ok
-            ? Results.Ok(new DockerActionResponse(true, "rmi", id))
-            : ToResult(result, "删除镜像");
+        if (result.Ok)
+        {
+            return Results.Ok(new DockerActionResponse(true, "rmi", id));
+        }
+
+        // 常见冲突原因单独给出可读提示；前端据 409 决定是否引导强制删除。
+        var stderr = result.StandardError;
+        if (stderr.Contains("image is referenced in multiple repositories", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "镜像被多个仓库标签引用",
+                detail: force == true
+                    ? "即使强制删除也未能移除该镜像，请检查其余标签或容器引用后重试。"
+                    : "该镜像被多个仓库标签共同引用，普通删除会被拒绝；确认后可强制删除（会同时移除该镜像的所有标签）。");
+        }
+
+        if (stderr.Contains("image is being used by running container", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "镜像正在被容器使用",
+                detail: "该镜像正被运行中的容器使用，强制删除也无法移除；请先停止并删除相关容器。");
+        }
+
+        if (stderr.Contains("image is being used by stopped container", StringComparison.OrdinalIgnoreCase))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "镜像被已停止的容器使用",
+                detail: "该镜像仍被已停止的容器引用，需要强制删除；强制删除不会删除容器。");
+        }
+
+        return ToResult(result, "删除镜像");
     }
 
     /// <summary>清理悬空镜像（<c>docker image prune -f</c>）。</summary>

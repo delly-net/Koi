@@ -237,7 +237,12 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and image references against
   `^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,254}$`. Errors: 400 invalid input, 403 docker permission,
   404 missing container/image, 409 conflict (image in use), 413 output too large, 503 daemon or
-  CLI unavailable, 504 timeout. `docker logs` is a snapshot bounded by
+  CLI unavailable, 504 timeout. Image deletion defaults to a plain `docker rmi`; when it returns
+  409 the UI asks for a second confirmation and retries with `force=true` (`docker rmi -f`). The
+  backend answers the common image conflicts with Chinese details instead of raw CLI stderr
+  (referenced by multiple repositories, used by a running container, used by a stopped
+  container); forced deletion removes every repository tag of that image, and an image used by a
+  running container cannot be removed even with `-f`. `docker logs` is a snapshot bounded by
   `LogTailDefault`/`LogTailMax`, and pull runs with `--quiet`.
 - Docker config keys: `Koi:Docker:Enabled`, `DockerPath` (empty = auto-detect
   `/usr/bin/docker`, `/usr/local/bin/docker`, `/bin/docker`), `AllowedGroups`,
@@ -338,7 +343,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   every operation (start / stop / restart / pause / unpause / logs / detail / delete) into one
   `操作` dropdown whose items are disabled according to `state`; logs open in a dialog with a tail
   selector (snapshot, not follow) and detail opens in a drawer fed by `docker inspect`. The image
-  tab offers pull by reference and dangling-image prune; the system tab shows `docker version` /
+  tab offers pull by reference, dangling-image prune and per-row delete. Delete first runs without
+  `-f`; a 409 conflict (multiple repository tags or container references) opens a `强制删除镜像`
+  confirmation and retries with `force=true`, with a message that forced deletion removes all of the
+  image's repository tags. Images used by a running container only show the guidance message (stop
+  and delete the container first) because `-f` cannot remove them. The system tab shows `docker version` /
   `docker info` fields plus a `docker stats --no-stream` table. 403 (not in an allowed group) and
   503 (docker unavailable) render as persistent alerts instead of toasts.
 
