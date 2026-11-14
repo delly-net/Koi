@@ -1,8 +1,4 @@
 #!/bin/bash
-echo "[==========拉取代码==========]"
-cd /project/github/delly-net/Koi
-git checkout main
-git pull
 cd /project/github/delly-net/Koi/ui
 echo "[==========更新依赖==========]"
 npm install

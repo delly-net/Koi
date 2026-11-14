@@ -1,8 +1,4 @@
 #!/bin/bash
-echo "[==========拉取代码==========]"
-cd /project/github/delly-net/Koi
-git checkout main
-git pull
 echo "[==========编译代码==========]"
 mkdir -p /publish/github/delly-net/Koi/files
 cd /project/github/delly-net/Koi/api
