@@ -10,6 +10,7 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 - multiple concurrent online terminals
 - file management (move / copy / paste)
 - multi-file online text editing
+- Linux systemd service management (state, lifecycle, boot enablement, logs)
 
 ## Repository state
 
@@ -20,12 +21,15 @@ are implemented.
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST, docker-CLI-backed container/image management restricted to configured
-  groups, Linux `/proc`-backed server status (CPU/memory/disk/network) for all signed-in users,
-  and static hosting of the built SPA from `wwwroot` with history-mode fallback.
+  groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
+  restricted to configured groups, Linux `/proc`-backed server status (CPU/memory/disk/network) for
+  all signed-in users, and static hosting of the built SPA from `wwwroot` with history-mode
+  fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
   multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page, a
-  container manager page and a homepage server-status panel refreshed every 5 seconds.
+  container manager page, a systemd service manager page and a homepage server-status panel
+  refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -52,11 +56,12 @@ tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost w
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, file helper process, operation service, REST endpoints),
   `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
+  `Services/` (systemctl/journalctl runner, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
-- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API and
-  docker API types), `src/config/` (runtime config incl. text file associations), `src/stores/`
-  (Pinia auth, workspace tab and editor tab state), `src/router/`, `src/views/`
-  (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker panels),
+- `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
+  docker API and service API types), `src/config/` (runtime config incl. text file associations),
+  `src/stores/` (Pinia auth, workspace tab and editor tab state), `src/router/`, `src/views/`
+  (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker / service panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
   `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
@@ -149,9 +154,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
   no `forkpty`, no libutil, no C toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
-  `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable`), `POST /api/auth/login`,
-  `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`, `GET /api/system/status`,
-  and the `/api/files/*` and `/api/docker/*` groups described below; errors use ProblemDetails.
+  `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable`),
+  `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`,
+  `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*` and `/api/services/*` groups
+  described below; errors use ProblemDetails.
   Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
@@ -259,6 +265,35 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `MaxLogBytes` (2 MiB), `LogTailDefault` (500), `LogTailMax` (5000). The deployment account (the
   `koi.service` user) must be a member of the configured group or the module returns 403 for
   everyone.
+- Service management (`api/Services/`, `/api/services/**`) runs the systemctl CLI from the main
+  process through `Process.Start` + `ArgumentList` — never a shell — with a fixed whitelist
+  (`list-units`, `list-unit-files`, `show`, `start`, `stop`, `restart`, `reload`, `enable`,
+  `disable`; `journalctl` only for logs). `LANG=C`, `LC_ALL=C` and `SYSTEMD_COLORS=0` keep the
+  output stable. `GET /api/services` merges `systemctl list-units --type=service --all --plain
+  --no-legend` (runtime state + description; description is the remainder after the first four
+  columns) with `systemctl list-unit-files --type=service --no-legend` (enablement state), so
+  stopped and not-loaded installed units are listed too. `GET /api/services/{name}` parses
+  `systemctl show --property=...`; because `systemctl show` exits 0 for a missing unit, 404 is
+  decided by `LoadState=not-found`. `POST /api/services/{name}/{start|stop|restart|reload|enable|disable}`
+  executes exactly one whitelisted action. `GET /api/services/{name}/logs?tail=` runs `journalctl
+  -u <unit> -n <tail> -q --no-pager -o short-iso`, with `tail` clamped to
+  `LogTailDefault`/`LogTailMax`. Unit names must match
+  `^[A-Za-z0-9][A-Za-z0-9_.@:\x5c-]{0,200}\.service$` (no leading `-`, spaces, `/` or glob
+  characters), so a name can never be interpreted as an option or pattern. Errors: 400 invalid
+  unit/action, 403 permission or not in an allowed group, 404 unit not found, 409
+  masked/unsupported operation, 413 output too large, 503 disabled/non-Linux/systemctl
+  missing/systemd not running, 504 timeout.
+- Service authorization mirrors Docker: every `/api/services/**` endpoint requires a session and
+  membership in `Koi:Services:AllowedGroups` (default `["sudo","wheel"]`), resolved with
+  `id -nG -- <user>` so NSS/LDAP groups count. uid 0 is always allowed even when the list is
+  empty. The check order is Enabled → Linux → systemctl availability → session → account name →
+  root → group list → membership. systemctl is equivalent to host root, so the service account
+  must be trusted. The UI warns that stopping, restarting or disabling the Koi service itself
+  interrupts the current page, but the backend deliberately does not block it.
+- Service config keys: `Koi:Services:Enabled`, `SystemctlPath` / `JournalctlPath` (empty =
+  auto-detect `/usr/bin/...`, `/bin/...`, then `PATH`), `AllowedGroups`, `CommandTimeoutSeconds`
+  (120, above systemd's 90-second stop timeout), `MaxOutputBytes` (4 MiB), `MaxLogBytes` (2 MiB),
+  `LogTailDefault` (500), `LogTailMax` (5000).
 - Server status (`api/Monitor/`, `GET /api/system/status`) is available to every signed-in user
   because it exposes only aggregate host metrics. It reads `/proc/stat` (CPU), `/proc/meminfo`
   (memory and swap), `/proc/loadavg`, `/proc/uptime`, `/proc/net/dev` (every interface except
@@ -306,9 +341,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the five modules mount in the sibling `.panels`
+  empty and `.el-tabs__content` is hidden; the six modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
-  `docker`). `首页` is
+  `docker` / `service`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
   a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
@@ -336,11 +371,12 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `v-loading`, so the previous snapshot stays visible and is replaced when the new one arrives;
   only the first load (no data yet) shows `el-skeleton`, and the `重试` button keeps its own
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
-  persistent alert with `重试` instead of a toast. Below it are the four module cards (terminal /
-  files / editor / docker) whose entry buttons share one style: all `type="primary"`, full width
-  of the card body, and pinned to the card bottom (`p { flex: 1 }` plus a column flex body) so the
-  four buttons sit on the same horizontal line even though the descriptions differ in length. Keep
-  new home cards on the same pattern.
+  persistent alert with `重试` instead of a toast. Below it are the five module cards (terminal /
+  files / editor / docker / service) whose entry buttons share one style: all `type="primary"`,
+  full width of the card body, and pinned to the card bottom (`p { flex: 1 }` plus a column flex
+  body) so the five buttons sit on the same horizontal line even though the descriptions differ in
+  length. Keep new home cards on the same pattern; `.modules` uses a 1400 px max width so all five
+  fit on one row on wide screens.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
@@ -385,6 +421,15 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   and delete the container first) because `-f` cannot remove them. The system tab shows `docker version` /
   `docker info` fields plus a `docker stats --no-stream` table. 403 (not in an allowed group) and
   503 (docker unavailable) render as persistent alerts instead of toasts.
+- The 服务管理 tab (`ui/src/views/ServiceView.vue`, workspace key `service`) lists systemd services
+  with name, description, runtime state (ActiveState/SubState), boot enablement (UnitFileState) and
+  client-side keyword/state filters; data is fetched on mount and only on the manual `刷新` button.
+  Every row operation lives in one `操作` dropdown (start / stop / restart / reload / enable
+  autostart / disable autostart / logs / detail) whose items are disabled according to the current
+  state. Stop, restart and disable ask for confirmation and warn that operating on the Koi service
+  itself interrupts the current page. Logs open in a dialog with a tail selector
+  (`journalctl` snapshot, not follow); detail opens in a drawer fed by `systemctl show`. 403 (not
+  in an allowed group) and 503 (systemd unavailable) render as persistent alerts instead of toasts.
 
 ## Knowledge base
 

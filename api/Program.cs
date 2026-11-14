@@ -6,6 +6,7 @@ using Koi.Api.Docker;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Monitor;
+using Koi.Api.Services;
 using Koi.Api.Terminal;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -60,12 +61,15 @@ builder.Services.Configure<DockerOptions>(
     builder.Configuration.GetSection(DockerOptions.SectionName));
 builder.Services.Configure<SystemMonitorOptions>(
     builder.Configuration.GetSection(SystemMonitorOptions.SectionName));
+builder.Services.Configure<ServiceOptions>(
+    builder.Configuration.GetSection(ServiceOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
 builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
 builder.Services.AddSingleton<SystemMonitorService>();
+builder.Services.AddSingleton<SystemctlCommandRunner>();
 
 // 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
 var fileOptions = builder.Configuration
@@ -141,7 +145,9 @@ app.UseWebSockets(new WebSocketOptions
     KeepAliveInterval = TimeSpan.FromSeconds(30),
 });
 
-app.MapGet("/api/health", (IOptions<DockerOptions> dockerOptions) => Results.Ok(new
+app.MapGet("/api/health", (
+    IOptions<DockerOptions> dockerOptions,
+    IOptions<ServiceOptions> serviceOptions) => Results.Ok(new
 {
     status = "ok",
     platform = OperatingSystem.IsLinux() ? "linux" : "other",
@@ -150,6 +156,7 @@ app.MapGet("/api/health", (IOptions<DockerOptions> dockerOptions) => Results.Ok(
     fileAvailable = OperatingSystem.IsLinux(),
     dockerAvailable = DockerCommandRunner.IsAvailable(dockerOptions.Value),
     systemMonitorAvailable = OperatingSystem.IsLinux(),
+    serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceOptions.Value),
     timestamp = DateTimeOffset.UtcNow,
 }));
 
@@ -158,6 +165,7 @@ app.MapTerminalEndpoints();
 app.MapFileEndpoints();
 app.MapDockerEndpoints();
 app.MapSystemMonitorEndpoints();
+app.MapServiceEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();

@@ -15,6 +15,7 @@ import TerminalView from '@/views/TerminalView.vue'
 import FilesView from '@/views/FilesView.vue'
 import EditorView from '@/views/EditorView.vue'
 import DockerView from '@/views/DockerView.vue'
+import ServiceView from '@/views/ServiceView.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -96,6 +97,7 @@ async function handleLogout(): Promise<void> {
       <FilesView v-if="hasTab('files')" v-show="activeKey === 'files'" />
       <EditorView v-if="hasTab('editor')" v-show="activeKey === 'editor'" />
       <DockerView v-if="hasTab('docker')" v-show="activeKey === 'docker'" />
+      <ServiceView v-if="hasTab('service')" v-show="activeKey === 'service'" />
     </div>
   </div>
 </template>

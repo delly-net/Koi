@@ -36,6 +36,12 @@ const workspace = useWorkspaceStore()
         <p>通过 docker 命令查看与管理容器、镜像与资源占用；仅 docker 组成员可用，手动刷新数据。</p>
         <el-button type="primary" class="module-action" @click="workspace.open('docker')">打开容器管理</el-button>
       </el-card>
+
+      <el-card class="module-card" shadow="hover">
+        <template #header>服务管理</template>
+        <p>通过 systemctl 查看系统服务状态，启停、重启、重载服务，管理开机自启并查看服务日志。</p>
+        <el-button type="primary" class="module-action" @click="workspace.open('service')">打开服务管理</el-button>
+      </el-card>
     </div>
   </div>
 </template>
@@ -52,7 +58,7 @@ const workspace = useWorkspaceStore()
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   align-items: stretch;
   gap: 16px;
-  max-width: 1100px;
+  max-width: 1400px;
   margin: 0 auto;
 }
 

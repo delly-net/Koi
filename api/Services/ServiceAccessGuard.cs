@@ -1,0 +1,194 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using Koi.Api.Terminal;
+
+namespace Koi.Api.Services;
+
+/// <summary>
+/// 服务管理的公共前置校验：开关、平台、systemctl 可用性、登录账号与允许组资格。
+/// </summary>
+/// <remarks>
+/// systemctl 操作等同于宿主 root，因此不能仅凭「已登录」放行。
+/// 组成员通过系统 <c>id -nG -- &lt;user&gt;</c> 读取（尊重 NSS/LDAP 配置），
+/// 无法读取时按 503 拒绝而不是默认放行。
+/// <para>
+/// 例外：uid 为 0 的账号（root）通过 <c>getpwnam_r</c> 解析后直接放行——它已等同于宿主管理员，
+/// 即使 <c>AllowedGroups</c> 为空数组也不受该列表限制；普通账号仍按组成员校验。
+/// </para>
+/// </remarks>
+public static class ServiceAccessGuard
+{
+    private const int MaxUserNameLength = 64;
+    private static readonly TimeSpan IdentityCommandTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>执行前置校验；返回 <c>null</c> 表示允许访问。</summary>
+    public static async Task<(IResult? Error, string UserName)> AuthorizeAsync(
+        HttpContext context,
+        ServiceOptions settings,
+        CancellationToken cancellationToken)
+    {
+        var userName = context.User.Identity?.Name ?? string.Empty;
+
+        if (!settings.Enabled)
+        {
+            return (Problem(StatusCodes.Status503ServiceUnavailable, "服务管理已关闭", "管理员已禁用服务管理功能。"), userName);
+        }
+
+        if (!OperatingSystem.IsLinux())
+        {
+            return (Problem(
+                StatusCodes.Status503ServiceUnavailable,
+                "服务管理不可用",
+                "服务管理依赖 Linux 的 systemd，当前平台不支持。"), userName);
+        }
+
+        if (!SystemctlCommandRunner.IsAvailable(settings))
+        {
+            return (Problem(
+                StatusCodes.Status503ServiceUnavailable,
+                "systemctl 不可用",
+                "未找到 systemctl 可执行文件，请确认系统使用 systemd 或在 Koi:Services:SystemctlPath 中配置路径。"), userName);
+        }
+
+        if (string.IsNullOrEmpty(userName))
+        {
+            return (Problem(StatusCodes.Status401Unauthorized, "未登录", "请先登录后再访问服务管理。"), userName);
+        }
+
+        if (!IsValidUserName(userName))
+        {
+            return (Problem(
+                StatusCodes.Status403Forbidden,
+                "无法识别账号",
+                "当前登录账号名不合法，无法校验服务管理访问权限。"), userName);
+        }
+
+        // root（uid 0）等同宿主管理员，始终允许访问服务管理，即使 AllowedGroups 为空。
+        // 以解析出的 uid 判断而不是用户名，避免别名账号被误放行。
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is { Uid: 0 })
+        {
+            return (null, userName);
+        }
+
+        if (settings.AllowedGroups is not { Length: > 0 })
+        {
+            return (Problem(
+                StatusCodes.Status403Forbidden,
+                "无权访问服务管理",
+                "管理员未配置允许访问服务管理的用户组。"), userName);
+        }
+
+        var (groups, error) = await ReadGroupsAsync(userName, cancellationToken);
+        if (groups is null)
+        {
+            return (Problem(StatusCodes.Status503ServiceUnavailable, "无法校验服务管理权限", error), userName);
+        }
+
+        if (!groups.Any(group => settings.AllowedGroups.Contains(group, StringComparer.Ordinal)))
+        {
+            return (Problem(
+                StatusCodes.Status403Forbidden,
+                "无权访问服务管理",
+                $"当前账号不在允许的服务管理组（{string.Join("、", settings.AllowedGroups)}）内。"), userName);
+        }
+
+        return (null, userName);
+    }
+
+    private static bool IsValidUserName(string userName) =>
+        userName.Length <= MaxUserNameLength &&
+        !userName.Contains(':') &&
+        !userName.Contains('\0') &&
+        !userName.Any(char.IsControl);
+
+    /// <summary>读取账号的全部组名；失败返回 <c>(null, 原因)</c>。</summary>
+    private static async Task<(string[]? Groups, string Error)> ReadGroupsAsync(
+        string userName,
+        CancellationToken cancellationToken)
+    {
+        var idPath = File.Exists("/usr/bin/id") ? "/usr/bin/id" : "/bin/id";
+        if (!File.Exists(idPath))
+        {
+            return (null, "系统缺少 id 命令，无法校验服务管理访问权限。");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = idPath,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        // 用户名不作为 shell 解析，且用 -- 终止选项，避免以 - 开头的名称被当作参数。
+        startInfo.ArgumentList.Add("-nG");
+        startInfo.ArgumentList.Add("--");
+        startInfo.ArgumentList.Add(userName);
+
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo) ?? throw new IOException("Process.Start 返回 null。");
+        }
+        catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException)
+        {
+            return (null, $"无法执行 id 命令：{ex.Message}");
+        }
+
+        using (process)
+        {
+            process.StandardInput.Close();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(IdentityCommandTimeout);
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                Kill(process);
+                return (null, $"读取账号 {userName} 的组信息超时。");
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    Kill(process);
+                }
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            if (process.ExitCode != 0)
+            {
+                var detail = string.IsNullOrWhiteSpace(stderr) ? $"退出码 {process.ExitCode}" : stderr.Trim();
+                return (null, $"无法读取账号 {userName} 的组信息：{detail}");
+            }
+
+            return (stdout.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries), string.Empty);
+        }
+    }
+
+    private static void Kill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or SystemException)
+        {
+            // 进程已退出或无权终止，忽略。
+        }
+    }
+
+    private static IResult Problem(int statusCode, string title, string detail) =>
+        Results.Problem(statusCode: statusCode, title: title, detail: detail);
+}
