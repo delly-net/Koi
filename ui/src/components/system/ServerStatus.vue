@@ -21,6 +21,11 @@ function shouldPoll(): boolean {
   return props.active && document.visibilityState === 'visible'
 }
 
+/**
+ * 拉取一次状态快照。
+ * 定时刷新为静默刷新：不显示 loading 遮罩，旧数据保持可见，新数据返回后直接替换；
+ * loading 仅用于「重试」按钮的显式操作反馈。
+ */
 async function refresh(): Promise<void> {
   if (requestInFlight) {
     return
@@ -156,7 +161,7 @@ function progressColor(percentage: number): string {
     <el-skeleton v-if="!status && !error" :rows="4" animated />
 
     <template v-if="status">
-      <div v-loading="loading" class="status-grid">
+      <div class="status-grid">
         <el-card class="status-card" shadow="never">
           <template #header>
             <div class="card-head">

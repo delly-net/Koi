@@ -332,7 +332,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   rates) plus a host/kernel/uptime/process row, refreshed every 5 seconds. Polling runs only while
   the home tab is active *and* `document.visibilityState === 'visible'`; tab switches and
   `visibilitychange` restart/stop the interval and fetch immediately on becoming visible; timers
-  and listeners are cleaned up on unmount. A failed request keeps the last data and shows a
+  and listeners are cleaned up on unmount. Refreshes are silent: `.status-grid` carries no
+  `v-loading`, so the previous snapshot stays visible and is replaced when the new one arrives;
+  only the first load (no data yet) shows `el-skeleton`, and the `重试` button keeps its own
+  `:loading` as explicit action feedback. A failed request keeps the last data and shows a
   persistent alert with `重试` instead of a toast. Below it are the four module cards (terminal /
   files / editor / docker) whose entry buttons share one style: all `type="primary"`, full width
   of the card body, and pinned to the card bottom (`p { flex: 1 }` plus a column flex body) so the
