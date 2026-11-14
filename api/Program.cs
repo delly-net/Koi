@@ -5,6 +5,7 @@ using Koi.Api.Data;
 using Koi.Api.Docker;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
+using Koi.Api.Monitor;
 using Koi.Api.Terminal;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -57,11 +58,14 @@ builder.Services.Configure<FileOptions>(
     builder.Configuration.GetSection(FileOptions.SectionName));
 builder.Services.Configure<DockerOptions>(
     builder.Configuration.GetSection(DockerOptions.SectionName));
+builder.Services.Configure<SystemMonitorOptions>(
+    builder.Configuration.GetSection(SystemMonitorOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
 builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
+builder.Services.AddSingleton<SystemMonitorService>();
 
 // 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
 var fileOptions = builder.Configuration
@@ -145,6 +149,7 @@ app.MapGet("/api/health", (IOptions<DockerOptions> dockerOptions) => Results.Ok(
     terminalAvailable = OperatingSystem.IsLinux(),
     fileAvailable = OperatingSystem.IsLinux(),
     dockerAvailable = DockerCommandRunner.IsAvailable(dockerOptions.Value),
+    systemMonitorAvailable = OperatingSystem.IsLinux(),
     timestamp = DateTimeOffset.UtcNow,
 }));
 
@@ -152,6 +157,7 @@ app.MapAuthEndpoints();
 app.MapTerminalEndpoints();
 app.MapFileEndpoints();
 app.MapDockerEndpoints();
+app.MapSystemMonitorEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();

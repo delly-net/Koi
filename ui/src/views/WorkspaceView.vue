@@ -83,7 +83,11 @@ async function handleLogout(): Promise<void> {
 
     <!-- 面板容器：按标签是否打开决定挂载，切换仅改变显示，状态得以保留 -->
     <div class="panels">
-      <HomeView v-if="hasTab('home')" v-show="activeKey === 'home'" />
+      <HomeView
+        v-if="hasTab('home')"
+        v-show="activeKey === 'home'"
+        :active="activeKey === 'home'"
+      />
       <TerminalView
         v-if="hasTab('terminal')"
         v-show="activeKey === 'terminal'"

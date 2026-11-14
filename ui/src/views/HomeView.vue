@@ -1,20 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
+import ServerStatus from '@/components/system/ServerStatus.vue'
 
-const auth = useAuthStore()
+/** active 由工作区传入：仅首页标签可见时才轮询服务器状态。 */
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
+
 const workspace = useWorkspaceStore()
-const userName = computed(() => auth.user?.userName ?? '')
 </script>
 
 <template>
   <div class="home-view">
-    <el-result icon="success" title="登录成功" :sub-title="`欢迎回来，${userName}`">
-      <template #extra>
-        <p class="hint">终端、文件管理、文本编辑与容器管理都在工作区标签中打开，可自由切换。</p>
-      </template>
-    </el-result>
+    <ServerStatus :active="props.active" />
 
     <div class="modules">
       <el-card class="module-card" shadow="hover">
@@ -49,11 +45,6 @@ const userName = computed(() => auth.user?.userName ?? '')
   height: 100%;
   padding: 24px;
   overflow: auto;
-}
-
-.hint {
-  margin: 0;
-  color: #8a919f;
 }
 
 .modules {

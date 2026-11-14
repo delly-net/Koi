@@ -66,8 +66,7 @@ async function handleSubmit(): Promise<void> {
       console.warn('[登录] 记住密码处理失败：', error)
     }
 
-    ElMessage.success('登录成功')
-
+    // 登录成功后直接进入工作区，首页不再弹出“登录成功”提示。
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     await router.replace(redirect.startsWith('/') ? redirect : '/')
   } catch (error) {

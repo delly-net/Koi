@@ -20,11 +20,12 @@ are implemented.
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST, docker-CLI-backed container/image management restricted to configured
-  groups, and static hosting of the built SPA from `wwwroot` with history-mode fallback.
+  groups, Linux `/proc`-backed server status (CPU/memory/disk/network) for all signed-in users,
+  and static hosting of the built SPA from `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page and a
-  container manager page.
+  multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page, a
+  container manager page and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -50,13 +51,15 @@ tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost w
   `Data/` (EF Core context and entities), `Hosting/` (frontend static files and SPA fallback),
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, file helper process, operation service, REST endpoints),
-  `Docker/` (docker CLI runner, group authorization guard, REST endpoints), `appsettings*.json`.
+  `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
+  `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API and
   docker API types), `src/config/` (runtime config incl. text file associations), `src/stores/`
   (Pinia auth, workspace tab and editor tab state), `src/router/`, `src/views/`
   (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
-  `FileBrowserPane` used by the file manager's inner tabs).
+  `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
+  (`ServerStatus.vue`, the homepage status cards and 5-second polling).
 - `icon/` — application icons (48 / 256 / full size).
 
 ## Commands
@@ -146,9 +149,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
   no `forkpty`, no libutil, no C toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
-  `fileAvailable` / `dockerAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`,
-  `GET /api/auth/me`, `GET /api/terminal/ws`, and the `/api/files/*` and `/api/docker/*` groups
-  described below; errors use ProblemDetails.
+  `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable`), `POST /api/auth/login`,
+  `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`, `GET /api/system/status`,
+  and the `/api/files/*` and `/api/docker/*` groups described below; errors use ProblemDetails.
   Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
@@ -256,6 +259,19 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `MaxLogBytes` (2 MiB), `LogTailDefault` (500), `LogTailMax` (5000). The deployment account (the
   `koi.service` user) must be a member of the configured group or the module returns 403 for
   everyone.
+- Server status (`api/Monitor/`, `GET /api/system/status`) is available to every signed-in user
+  because it exposes only aggregate host metrics. It reads `/proc/stat` (CPU), `/proc/meminfo`
+  (memory and swap), `/proc/loadavg`, `/proc/uptime`, `/proc/net/dev` (every interface except
+  `lo`), `/proc/sys/kernel/osrelease`, counts numeric `/proc` directories for the process count,
+  and gets disks from `DriveInfo` (statvfs). CPU and network are cumulative counters, so the
+  singleton `SystemMonitorService` keeps the previous sample and computes deltas: the first
+  request, or one arriving more than 30 s after the last sample, takes an internal 250 ms sample
+  instead of averaging idle time, and snapshots are cached for 1 s so concurrent clients do not
+  produce near-zero intervals. Percentages are clamped to 0..100. Pseudo filesystems (`tmpfs`,
+  `devtmpfs`, `overlay`, `squashfs`, `proc`, `sysfs`, `cgroup*`, …) are filtered, unreadable
+  mounts are skipped per drive, and at most 20 mounts are returned. `Koi:SystemMonitor:Enabled`
+  (default `true`) or a non-Linux host returns 503, and a missing/unreadable `/proc` returns 503
+  ProblemDetails. The collector never runs a shell or external command.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
   content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is
@@ -310,11 +326,18 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `.xterm-screen` height with the `.xterm` client height and drops rows (never adds) until nothing
   overflows, and the pane is refitted once `document.fonts.ready` resolves because font metrics set
   the cell height. Hidden panes (size < 24 px) are still skipped.
-- The 首页 panel (`views/HomeView.vue`) shows four module cards (terminal / files / editor /
-  docker) whose entry buttons share one style: all `type="primary"`, full width of the card body,
-  and pinned to the card bottom (`p { flex: 1 }` plus a column flex body) so the four buttons sit
-  on the same horizontal line even though the descriptions differ in length. Keep new home cards
-  on the same pattern.
+- The 首页 panel (`views/HomeView.vue`) receives `:active` from the workspace and no longer shows
+  the former “登录成功” `el-result` block. Its top is `components/system/ServerStatus.vue`: four
+  status cards (CPU usage/cores/load, memory + swap, per-mount disk usage, network receive/send
+  rates) plus a host/kernel/uptime/process row, refreshed every 5 seconds. Polling runs only while
+  the home tab is active *and* `document.visibilityState === 'visible'`; tab switches and
+  `visibilitychange` restart/stop the interval and fetch immediately on becoming visible; timers
+  and listeners are cleaned up on unmount. A failed request keeps the last data and shows a
+  persistent alert with `重试` instead of a toast. Below it are the four module cards (terminal /
+  files / editor / docker) whose entry buttons share one style: all `type="primary"`, full width
+  of the card body, and pinned to the card bottom (`p { flex: 1 }` plus a column flex body) so the
+  four buttons sit on the same horizontal line even though the descriptions differ in length. Keep
+  new home cards on the same pattern.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
