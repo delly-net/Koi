@@ -1,7 +1,6 @@
 using System.Text;
 using Koi.Api.Auth;
 using Koi.Api.Terminal;
-using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Files;
 
@@ -22,17 +21,19 @@ public static class FileEndpoints
             .AddEndpointFilter<RequireSessionFilter>();
 
         group.MapGet("/roots", GetRoots);
+        group.MapGet("/settings", GetSettings);
+        group.MapPut("/settings", SaveSettingsAsync);
         group.MapGet("/list", ListAsync);
         group.MapPost("/mkdir", MakeDirectoryAsync);
         group.MapPost("/touch", CreateFileAsync);
         group.MapPost("/rename", RenameAsync);
         group.MapPost("/delete", DeleteAsync);
         group.MapPost("/copy", (HttpContext context, FileTransferRequest? request,
-                FileOperationService service, IOptions<FileOptions> options, CancellationToken cancellationToken) =>
-            TransferAsync(context, request, service, options, move: false, cancellationToken));
+                FileOperationService service, FileSettingsService settingsService, CancellationToken cancellationToken) =>
+            TransferAsync(context, request, service, settingsService, move: false, cancellationToken));
         group.MapPost("/move", (HttpContext context, FileTransferRequest? request,
-                FileOperationService service, IOptions<FileOptions> options, CancellationToken cancellationToken) =>
-            TransferAsync(context, request, service, options, move: true, cancellationToken));
+                FileOperationService service, FileSettingsService settingsService, CancellationToken cancellationToken) =>
+            TransferAsync(context, request, service, settingsService, move: true, cancellationToken));
         group.MapPost("/upload", UploadAsync);
         group.MapGet("/download", DownloadAsync);
         group.MapGet("/text", ReadTextAsync);
@@ -43,9 +44,9 @@ public static class FileEndpoints
 
     private static IResult GetRoots(
         HttpContext context,
-        IOptions<FileOptions> optionsAccessor)
+        FileSettingsService settingsService)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -54,14 +55,77 @@ public static class FileEndpoints
         return Results.Ok(new FileRootsResponse(identity!.HomeDirectory, options.AllowedRoots));
     }
 
+    /// <summary>
+    /// 读取文件管理配置；仅 root 可读，且不检查 Enabled 与平台，便于管理员修复被关闭的模块。
+    /// </summary>
+    private static IResult GetSettings(HttpContext context, FileSettingsService settingsService)
+    {
+        var error = AuthorizeSettings(context);
+        return error ?? Results.Ok(settingsService.Current);
+    }
+
+    /// <summary>保存文件管理配置；保存后立即替换运行时快照，无需重启服务。</summary>
+    private static async Task<IResult> SaveSettingsAsync(
+        HttpContext context,
+        FileOptions? request,
+        FileSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var error = AuthorizeSettings(context);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request is null)
+        {
+            return BadRequest("请求内容为空", "请提供完整的文件管理配置。");
+        }
+
+        var settings = FileSettingsValidator.Normalize(request);
+        if (FileSettingsValidator.Validate(settings) is { } detail)
+        {
+            return BadRequest("配置不合法", detail);
+        }
+
+        var userName = context.User.Identity?.Name ?? string.Empty;
+        return Results.Ok(await settingsService.SaveAsync(settings, userName, cancellationToken));
+    }
+
+    /// <summary>
+    /// 设置端点仅允许 uid 0 的登录账号。root 判定必须经 <c>getpwnam_r</c> 解析，
+    /// 不能按用户名比较；这里刻意跳过 Enabled 与平台检查，保证配置损坏时可修复。
+    /// </summary>
+    private static IResult? AuthorizeSettings(HttpContext context)
+    {
+        var userName = context.User.Identity?.Name ?? string.Empty;
+        if (string.IsNullOrEmpty(userName))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "未登录",
+                detail: "请先登录后再读取文件管理设置。");
+        }
+
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is not { Uid: 0 })
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "无权修改文件管理设置",
+                detail: "只有 root（uid 0）账号可以读取或修改文件管理设置。");
+        }
+
+        return null;
+    }
+
     private static async Task<IResult> ListAsync(
         HttpContext context,
         string? path,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -82,10 +146,10 @@ public static class FileEndpoints
         HttpContext context,
         FilePathRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -106,10 +170,10 @@ public static class FileEndpoints
         HttpContext context,
         FilePathRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -130,10 +194,10 @@ public static class FileEndpoints
         HttpContext context,
         FileRenameRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -159,10 +223,10 @@ public static class FileEndpoints
         HttpContext context,
         FileDeleteRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -198,11 +262,11 @@ public static class FileEndpoints
         HttpContext context,
         FileTransferRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         bool move,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -247,10 +311,10 @@ public static class FileEndpoints
         // 首次上传（前端不传 overwrite）会在参数绑定阶段直接被拒为 400。
         bool? overwrite,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -306,10 +370,10 @@ public static class FileEndpoints
         HttpContext context,
         string? path,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             await error.ExecuteAsync(context);
@@ -348,10 +412,10 @@ public static class FileEndpoints
         HttpContext context,
         string? path,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;
@@ -406,10 +470,10 @@ public static class FileEndpoints
         HttpContext context,
         FileTextSaveRequest? request,
         FileOperationService service,
-        IOptions<FileOptions> optionsAccessor,
+        FileSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var options = optionsAccessor.Value;
+        var options = settingsService.Current;
         if (Guard(context, options, out var identity) is { } error)
         {
             return error;

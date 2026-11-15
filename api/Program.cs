@@ -54,8 +54,6 @@ builder.Services.AddDbContext<KoiDbContext>(options =>
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 builder.Services.Configure<KoiStaticFilesOptions>(
     builder.Configuration.GetSection(KoiStaticFilesOptions.SectionName));
-builder.Services.Configure<FileOptions>(
-    builder.Configuration.GetSection(FileOptions.SectionName));
 builder.Services.Configure<DockerOptions>(
     builder.Configuration.GetSection(DockerOptions.SectionName));
 builder.Services.Configure<SystemMonitorOptions>(
@@ -67,6 +65,8 @@ builder.Services.AddScoped<SessionService>();
 // 终端配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<TerminalSettingsService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
+// 文件管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
+builder.Services.AddSingleton<FileSettingsService>();
 builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
 builder.Services.AddSingleton<SystemMonitorService>();
@@ -80,11 +80,9 @@ builder.Services.AddSingleton<PackageSourceService>();
 builder.Services.AddSingleton<PackageJobManager>();
 builder.Services.AddSingleton<PackageCacheService>();
 
-// 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
-var fileOptions = builder.Configuration
-    .GetSection(FileOptions.SectionName)
-    .Get<FileOptions>() ?? new FileOptions();
-var uploadRequestLimit = Math.Max(1, fileOptions.MaxUploadBytes) + 1024 * 1024;
+// 文件上传上限在运行期来自 SQLite 配置，但 Kestrel 的请求体上限只能在启动时确定：
+// 这里按固定硬顶（512 MiB）加 1 MiB 余量放行，具体单文件上限由端点逐请求检查。
+var uploadRequestLimit = FileOptions.MaxUploadBytesCeiling + 1024 * 1024;
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = uploadRequestLimit);
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = uploadRequestLimit);
 
@@ -140,6 +138,9 @@ await app.Services.GetRequiredService<PackageSettingsService>().LoadAsync();
 
 // 终端配置同样在启动时加载；数据库无记录时把旧 Koi:Terminal 节一次性迁移进来。
 await app.Services.GetRequiredService<TerminalSettingsService>().LoadAsync();
+
+// 文件管理配置在启动时加载；数据库无记录时把旧 Koi:Files 节一次性迁移进来。
+await app.Services.GetRequiredService<FileSettingsService>().LoadAsync();
 
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions

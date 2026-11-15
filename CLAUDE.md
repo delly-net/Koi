@@ -20,7 +20,8 @@ are implemented.
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
-  read/write over REST, docker-CLI-backed container/image management restricted to configured
+  read/write over REST (file settings stored in the SQLite generic settings table and edited by
+  root through a settings drawer), docker-CLI-backed container/image management restricted to configured
   groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
@@ -30,7 +31,7 @@ are implemented.
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page, a
+  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page, a
   container manager page, a systemd service manager page, an application manager page with a
   live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
@@ -51,13 +52,26 @@ one tab can be pasted into the directory of another; a successful cut-paste clea
 tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost when the workspace
 `文件管理` tab is closed.
 
+The `文件管理` page top-right toolbar carries a circular `设置` gear (`Setting`,
+`aria-label="文件管理设置"`) **only to root**: on mount the page silently calls
+`GET /api/files/settings`; success shows the button, any failure (403 for non-root, 503 on
+non-Linux) hides it without an error toast. The click opens a 480 px `el-drawer` editing every
+file setting — enable switch, allowed roots as a multi-select/creatable list of absolute paths,
+upload/list/online-text limits (byte values edited in MiB) and the five timeouts. `保存` sends
+`PUT /api/files/settings`, shows `设置已保存并立即生效`, updates the local snapshot and silently
+refreshes the home directory; saving `Enabled=false` keeps the open tabs but shows a persistent
+`文件管理不可用` alert (also shown when the initial `GET /api/files/roots` returns 503), cleared
+when the setting is re-enabled. Settings live in the SQLite
+generic settings table (`Feature = files`).
+
 ## Layout
 
 - `api/` — backend. Entry point `Program.cs`; `Auth/` (PAM authenticator, session service,
   middleware, endpoints), `Configuration/` (Linux external config loading and auto-creation),
   `Data/` (EF Core context and entities), `Hosting/` (frontend static files and SPA fallback),
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
-  `Files/` (path validation, file helper process, operation service, REST endpoints),
+  `Files/` (path validation, settings service/validator, file helper process, operation service,
+  REST endpoints),
   `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
@@ -176,8 +190,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
-  `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET /api/system/status`, and the
-  `/api/files/*`, `/api/docker/*`, `/api/services/*` and `/api/packages/*` groups described below;
+  `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
+  `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*`, `/api/services/*` and
+  `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
   back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
@@ -199,40 +214,57 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   127 unsupported platform.
 - File path policy: every path must be absolute, at most 4096 characters, free of NUL/control
   characters, normalized with `Path.GetFullPath`, resolved through symlinks (`File.ResolveLinkTarget`)
-  and contained in `Koi:Files:AllowedRoots`. The default is `["/"]` — whole-filesystem visibility is
+  and contained in the configured `AllowedRoots` (stored in the `files` settings row). The default is `["/"]` — whole-filesystem visibility is
   an explicit product decision; the real boundary is the dropped user's OS permissions. Names are
   limited to 255 characters and may not contain `/`. Deletion refuses `/` and configured roots;
   symlinks are deleted/copied as links and never traversed by recursive copy.
-- File API (`/api/files`, session cookie required; non-Linux or `Koi:Files:Enabled=false` → 503;
-  account missing from `getpwnam_r` → 403): `GET /roots`, `GET /list?path=`,
+- File API (`/api/files`, session cookie required; non-Linux or `Enabled=false` in the file
+  settings → 503; account missing from `getpwnam_r` → 403): `GET /roots`, `GET /list?path=`,
   `POST /mkdir` `{path}`, `POST /touch` `{path}`, `POST /rename` `{path,newName}`,
   `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
   `{sources,target,overwrite}`, `POST /upload?path=&overwrite=` (multipart field `file`),
-  `GET /download?path=`, `GET /text?path=` and `POST /text` `{path,content,expectedModifiedAt,hasBom}`.
-  Errors are ProblemDetails: 400 invalid path/request or non-UTF-8 text, 403 permission or
-  outside roots, 404 missing, 409 conflict (external modification or non-empty directory),
-  413 too large, 504 helper timeout. Listing is capped by `MaxListEntries` and reports
+  `GET /download?path=`, `GET /text?path=`, `POST /text` `{path,content,expectedModifiedAt,hasBom}`,
+  `GET /settings` and `PUT /settings`
+  `{enabled,allowedRoots,maxUploadBytes,maxListEntries,maxTextFileBytes,helperTimeoutSeconds,
+  listTimeoutSeconds,transferTimeoutSeconds,streamIdleTimeoutSeconds,streamMaxSeconds}`.
+  The settings endpoints are root-only (uid 0 resolved through `getpwnam_r`; non-root → 403) and
+  deliberately skip the `Enabled`/platform checks so a disabled or broken configuration can be
+  repaired. Other errors are ProblemDetails: 400 invalid path/request or non-UTF-8 text, 403
+  permission or outside roots, 404 missing, 409 conflict (external modification or non-empty
+  directory), 413 too large, 504 helper timeout. Listing is capped by `MaxListEntries` and reports
   `truncated`. `GET /text` returns `{path,content,modifiedAt,size,hasBom}`; `POST /text` returns
   `{ok,modifiedAt,size}` and maps the helper's `conflict` code to 409.
 - Online text editing is layered on the same helper: `readtext` reuses the download framing
   (header + raw bytes) and `writetext` reuses the upload framing. Only UTF-8 is supported
   (optional UTF-8 BOM is detected and preserved; invalid UTF-8 or NUL bytes → 400). Reads are
-  capped by `Koi:Files:MaxTextFileBytes`; when the helper's header reports a larger size the
+  capped by `MaxTextFileBytes` in the file settings; when the helper's header reports a larger size the
   parent kills the helper before draining, so the response is a 413 rather than a timeout.
   Saves are optimistic-concurrency writes: the request carries the `modifiedAt` observed at read
   time, the helper compares it with the current mtime and returns `conflict` (409) on mismatch;
   `expectedModifiedAt=0` forces an overwrite. The helper writes a temp file in the same directory,
   copies the original Unix mode onto it, then atomically renames it over the target (symlinks are
   resolved and their target is replaced, never the link itself).
-- File config keys: `Koi:Files:Enabled`, `AllowedRoots`, `MaxUploadBytes` (default 100 MiB;
-  `Program.cs` raises the Kestrel request-body limit and `FormOptions.MultipartBodyLengthLimit`
-  accordingly), `MaxListEntries`, `MaxTextFileBytes` (online text read/write cap, default 5 MiB),
-  `HelperTimeoutSeconds` (metadata and text read/write ops, 120 s),
+- File settings are **not** read from `appsettings.json` (`Koi:Files` was removed): the
+  `FileOptions` code defaults are the fallback, and the runtime source is the SQLite generic
+  settings table (`Feature = files`) through `FileSettingsService`. `GET/PUT
+  /api/files/settings` require a session and uid 0 (resolved through `getpwnam_r`), deliberately
+  skip the `Enabled`/platform checks so a disabled or broken configuration can be repaired, and
+  non-root gets 403. On first start, when no `files` row exists, `FileSettingsService.LoadAsync`
+  seeds the row from the legacy `Koi:Files` section (the `/etc/koi/appsettings.json` overlay still
+  counts) or from the code defaults; after that the section is ignored. The option set is
+  `Enabled`, `AllowedRoots` (default `["/"]`; 1–64 absolute paths, each ≤4096 characters and free
+  of control characters), `MaxUploadBytes` (default 100 MiB, ceiling 512 MiB), `MaxListEntries`
+  (5000, ceiling 100000), `MaxTextFileBytes` (online text read/write cap, default 5 MiB, ceiling
+  64 MiB), `HelperTimeoutSeconds` (metadata and text read/write ops, 120 s),
   `ListTimeoutSeconds` (directory listing, 300 s), `TransferTimeoutSeconds` (delete/copy/move,
   1800 s), `StreamIdleTimeoutSeconds` (upload/download with no data flowing, 120 s) and
-  `StreamMaxSeconds` (upload/download total cap, 0 = unlimited). Uploads are written to a temp file
-  in the destination directory and renamed into place, so an interrupted upload leaves no partial
-  target.
+  `StreamMaxSeconds` (upload/download total cap, 0 = unlimited). Saves replace the `Current`
+  snapshot atomically and raise `Changed`; every consumer reads it per request/operation, so
+  nothing may cache `IOptions<FileOptions>` (that would make saves ineffective). Kestrel
+  `MaxRequestBodySize` and `FormOptions.MultipartBodyLengthLimit` are fixed at startup to the
+  512 MiB ceiling plus 1 MiB overhead; the per-request limit is the current `MaxUploadBytes`, so
+  raising it within the ceiling needs no restart. Uploads are written to a temp file in the
+  destination directory and renamed into place, so an interrupted upload leaves no partial target.
 - File helper framing has two separate limits: requests (main → helper) are capped at 64 KiB,
   responses (helper → main) at 32 MiB because a directory listing carries every entry in one JSON
   frame. Never stop reading a frame without terminating the helper: if the parent rejects an

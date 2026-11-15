@@ -1,9 +1,23 @@
 namespace Koi.Api.Files;
 
-/// <summary>文件管理配置，配置节 <c>Koi:Files</c>。</summary>
+/// <summary>
+/// 文件管理配置。
+/// </summary>
+/// <remarks>
+/// 运行期配置不再来自 <c>appsettings.json</c>：由 <see cref="FileSettingsService"/> 从 SQLite
+/// 通用配置表（<c>Feature = files</c>）读取。旧的 <c>Koi:Files</c> 节只在数据库中还没有
+/// <c>files</c> 行时作为一次性迁移来源。
+/// </remarks>
 public sealed class FileOptions
 {
+    /// <summary>旧配置节名称，仅用于首次启动的一次性迁移。</summary>
     public const string SectionName = "Koi:Files";
+
+    /// <summary>
+    /// 单个上传文件的上限硬顶（512 MiB）。Kestrel 与 <c>FormOptions</c> 在启动时按此值
+    /// 设置请求体上限，实际单文件上限仍由当前配置的 <see cref="MaxUploadBytes"/> 逐请求检查。
+    /// </summary>
+    public const long MaxUploadBytesCeiling = 512L * 1024 * 1024;
 
     /// <summary>是否启用文件管理接口。</summary>
     public bool Enabled { get; set; } = true;

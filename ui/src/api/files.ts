@@ -30,6 +30,22 @@ export interface FileMutationResponse {
   ok: boolean
 }
 
+/** 文件管理配置（存储于 SQLite 通用配置表，仅 root 可读写）。 */
+export interface FileSettings {
+  enabled: boolean
+  /** 允许访问的根目录绝对路径；默认 ["/"] 表示整个文件系统。 */
+  allowedRoots: string[]
+  maxUploadBytes: number
+  maxListEntries: number
+  maxTextFileBytes: number
+  helperTimeoutSeconds: number
+  listTimeoutSeconds: number
+  transferTimeoutSeconds: number
+  streamIdleTimeoutSeconds: number
+  /** 上传/下载总时长上限（秒），0 表示不限制。 */
+  streamMaxSeconds: number
+}
+
 /** 读取文本文件的结果（服务端仅接受 UTF-8）。 */
 export interface TextFileResponse {
   path: string
@@ -61,6 +77,19 @@ function encodePath(path: string): string {
 /** 读取家目录与允许访问的根目录。 */
 export function getFileRoots(): Promise<FileRootsResponse> {
   return request<FileRootsResponse>('/api/files/roots')
+}
+
+/** 读取文件管理设置；非 root 账号会收到 403。 */
+export function getFileSettings(): Promise<FileSettings> {
+  return request<FileSettings>('/api/files/settings')
+}
+
+/** 保存文件管理设置；成功后立即生效。 */
+export function saveFileSettings(payload: FileSettings): Promise<FileSettings> {
+  return request<FileSettings>('/api/files/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 /** 列出目录；不传路径时后端返回登录用户的家目录。 */

@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
-using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Files;
 
@@ -9,7 +8,7 @@ namespace Koi.Api.Files;
 /// 主进程侧的文件操作入口：以隐藏参数拉起文件辅助进程，写入请求并读取响应。
 /// 文件读写全部发生在降权后的辅助进程内，主进程（可能以 root 运行）不直接触碰文件系统。
 /// </summary>
-public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<FileOperationService> logger)
+public sealed class FileOperationService(FileSettingsService settings, ILogger<FileOperationService> logger)
 {
     private const int CopyBufferSize = 81920;
 
@@ -80,7 +79,7 @@ public sealed class FileOperationService(IOptions<FileOptions> options, ILogger<
 
         // 超时按操作类型分级：目录列举、递归传输与流式上传/下载各有独立上限，
         // 流式操作按「有数据流动即续期」计算空闲超时，避免慢客户端被固定墙钟误杀。
-        var policy = ResolvePolicy(request, options.Value);
+        var policy = ResolvePolicy(request, settings.Current);
         using var timeout = new OperationTimeout(policy.Absolute, policy.Idle, cancellationToken);
         using var process = StartHelperProcess();
 
