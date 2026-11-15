@@ -503,17 +503,20 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `v-loading`, so the previous snapshot stays visible and is replaced when the new one arrives;
   only the first load (no data yet) shows `el-skeleton`, and the `重试` button keeps its own
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
-  persistent alert with `重试` instead of a toast. Below it are the six module entries (terminal /
-  files / editor / docker / service / package) driven by the `MODULES` array in `HomeView.vue`, each
-  rendered
-  as a lightweight tile: a 40 px Element Plus icon above the entry name, no border by default and a
-  primary-tinted highlight with a slight lift on hover/focus. The whole tile is the button
-  (`role="button"`, `tabindex="0"`, `@click` plus `Enter` / `Space`) and calls
-  `workspace.open(key)`; the description is no longer shown inline — it appears only as an
+  persistent alert with `重试` instead of a toast. Below it the module entries are split into two
+  groups driven by the `MODULE_GROUPS` array in `HomeView.vue`: **系统管理** (terminal / files /
+  editor / service / package) and **软件管理** (docker). Each group renders a
+  `section.module-group` with an `h2.module-group-title` (3 px primary bar + 16 px text) above its
+  `.modules` grid. Each entry is a lightweight tile: a 40 px Element Plus icon above the entry
+  name, no border by default and a primary-tinted highlight with a slight lift on hover/focus. The
+  whole tile is the button (`role="button"`, `tabindex="0"`, `@click` plus `Enter` / `Space`) and
+  calls `workspace.open(key)`; the description is not shown inline — it appears only as an
   `el-tooltip` on the icon. Element Plus teleports the tooltip to `body`, so its class is styled
-  via `:global(.module-tip)` (`max-width: 260px`). `.modules` uses a 1100 px max width (aligned
-  with the status panel) and `repeat(auto-fit, minmax(160px, 1fr))`, so tiles wrap on narrow
-  screens. Keep new home entries on the same pattern: add label, description and icon to `MODULES`.
+  via `:global(.module-tip)` (`max-width: 260px`). `.module-group` carries the 1100 px max width
+  (aligned with the status panel) and `.modules` uses `repeat(auto-fill, minmax(160px, 1fr))`, so
+  tiles wrap on narrow screens and the single 软件管理 tile keeps its normal width (`auto-fit`
+  would stretch it across the row). Keep new home entries on the same pattern: add label,
+  description and icon to the module list of the matching group.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
