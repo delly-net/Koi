@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using Koi.Api.Auth;
-using Microsoft.Extensions.Options;
+using Koi.Api.Terminal;
 
 namespace Koi.Api.Services;
 
@@ -56,6 +56,11 @@ public static class ServiceEndpoints
             .WithTags("Services")
             .AddEndpointFilter<RequireSessionFilter>();
 
+        // 设置端点使用字面量路径，必须早于 /{name} 注册；设置端点刻意跳过 Enabled 与
+        // systemctl 可用性检查，便于管理员修复被关闭或配错的服务管理。
+        group.MapGet("/settings", GetSettings);
+        group.MapPut("/settings", SaveSettingsAsync);
+
         group.MapGet("", ListServicesAsync);
         group.MapGet("/{name}", GetServiceAsync);
 
@@ -63,9 +68,9 @@ public static class ServiceEndpoints
         {
             var actionName = action;
             group.MapPost($"/{{name}}/{actionName}", (HttpContext context, string name,
-                    SystemctlCommandRunner runner, IOptions<ServiceOptions> optionsAccessor,
+                    SystemctlCommandRunner runner, ServiceSettingsService settingsService,
                     CancellationToken cancellationToken) =>
-                ServiceActionAsync(context, name, actionName, runner, optionsAccessor, cancellationToken));
+                ServiceActionAsync(context, name, actionName, runner, settingsService, cancellationToken));
         }
 
         group.MapGet("/{name}/logs", GetLogsAsync);
@@ -80,10 +85,10 @@ public static class ServiceEndpoints
     private static async Task<IResult> ListServicesAsync(
         HttpContext context,
         SystemctlCommandRunner runner,
-        IOptions<ServiceOptions> optionsAccessor,
+        ServiceSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -126,10 +131,10 @@ public static class ServiceEndpoints
         HttpContext context,
         string name,
         SystemctlCommandRunner runner,
-        IOptions<ServiceOptions> optionsAccessor,
+        ServiceSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -185,10 +190,10 @@ public static class ServiceEndpoints
         string name,
         string action,
         SystemctlCommandRunner runner,
-        IOptions<ServiceOptions> optionsAccessor,
+        ServiceSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -223,10 +228,10 @@ public static class ServiceEndpoints
         string name,
         int? tail,
         SystemctlCommandRunner runner,
-        IOptions<ServiceOptions> optionsAccessor,
+        ServiceSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -242,7 +247,7 @@ public static class ServiceEndpoints
             return Results.Problem(
                 statusCode: StatusCodes.Status503ServiceUnavailable,
                 title: "服务日志不可用",
-                detail: "未找到 journalctl 可执行文件，请确认系统使用 systemd 或在 Koi:Services:JournalctlPath 中配置路径。");
+                detail: "未找到 journalctl 可执行文件，请确认系统使用 systemd，或在服务管理设置中配置 journalctl 路径。");
         }
 
         var maxTail = settings.LogTailMax > 0 ? settings.LogTailMax : 5000;
@@ -482,13 +487,83 @@ public static class ServiceEndpoints
     private static string Truncate(string value) =>
         value.Length <= 4000 ? value : $"{value[..4000]}…";
 
-    /// <summary>公共前置校验：返回错误响应或当前配置。</summary>
-    private static async Task<(IResult? Error, ServiceOptions Settings)> GuardAsync(
+    /// <summary>
+    /// 设置端点授权：只允许 uid 0。刻意跳过 <c>Enabled</c> 与 systemctl 可用性检查，
+    /// 以便管理员在服务管理被关闭或配错时仍能读取并修复配置。
+    /// </summary>
+    private static (IResult? Error, string UserName) AuthorizeSettings(HttpContext context)
+    {
+        var userName = context.User.Identity?.Name ?? string.Empty;
+
+        if (!OperatingSystem.IsLinux())
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "服务管理不可用",
+                detail: "服务管理依赖 Linux 的 systemd，当前平台不支持。"), userName);
+        }
+
+        if (string.IsNullOrEmpty(userName))
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "未登录",
+                detail: "请先登录后再访问服务管理设置。"), userName);
+        }
+
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is not { Uid: 0 })
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "无权修改服务管理设置",
+                detail: "只有 root 账号可以修改服务管理配置。"), userName);
+        }
+
+        return (null, userName);
+    }
+
+    private static IResult GetSettings(
         HttpContext context,
-        IOptions<ServiceOptions> optionsAccessor,
+        ServiceSettingsService settingsService)
+    {
+        var (error, _) = AuthorizeSettings(context);
+        return error ?? Results.Ok(settingsService.Current);
+    }
+
+    private static async Task<IResult> SaveSettingsAsync(
+        HttpContext context,
+        ServiceOptions? request,
+        ServiceSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var settings = optionsAccessor.Value;
+        var (error, userName) = AuthorizeSettings(context);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request is null)
+        {
+            return BadRequest("请求内容为空", "请提供完整的服务管理配置。");
+        }
+
+        var settings = ServiceSettingsValidator.Normalize(request);
+        if (ServiceSettingsValidator.Validate(settings) is { } detail)
+        {
+            return BadRequest("配置不合法", detail);
+        }
+
+        return Results.Ok(await settingsService.SaveAsync(settings, userName, cancellationToken));
+    }
+
+    /// <summary>公共前置校验：返回错误响应或当前配置快照。</summary>
+    private static async Task<(IResult? Error, ServiceOptions Settings)> GuardAsync(
+        HttpContext context,
+        ServiceSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        // 每次请求读取最新快照，保证界面保存后立即生效。
+        var settings = settingsService.Current;
         var (error, _) = await ServiceAccessGuard.AuthorizeAsync(context, settings, cancellationToken);
         return (error, settings);
     }

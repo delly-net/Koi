@@ -59,8 +59,6 @@ builder.Services.Configure<DockerOptions>(
     builder.Configuration.GetSection(DockerOptions.SectionName));
 builder.Services.Configure<SystemMonitorOptions>(
     builder.Configuration.GetSection(SystemMonitorOptions.SectionName));
-builder.Services.Configure<ServiceOptions>(
-    builder.Configuration.GetSection(ServiceOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
 // 终端配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
@@ -73,6 +71,8 @@ builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<EditorSettingsService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
 builder.Services.AddSingleton<SystemMonitorService>();
+// 服务管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
+builder.Services.AddSingleton<ServiceSettingsService>();
 builder.Services.AddSingleton<SystemctlCommandRunner>();
 // 应用管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FeatureConfigStore>();
@@ -148,6 +148,9 @@ await app.Services.GetRequiredService<FileSettingsService>().LoadAsync();
 // 文本编辑配置在启动时加载；数据库无记录时写入内置默认扩展名规则。
 await app.Services.GetRequiredService<EditorSettingsService>().LoadAsync();
 
+// 服务管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Services 节）。
+await app.Services.GetRequiredService<ServiceSettingsService>().LoadAsync();
+
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -172,7 +175,7 @@ app.UseWebSockets(new WebSocketOptions
 
 app.MapGet("/api/health", (
     IOptions<DockerOptions> dockerOptions,
-    IOptions<ServiceOptions> serviceOptions,
+    ServiceSettingsService serviceSettings,
     PackageManagerResolver packageResolver) => Results.Ok(new
 {
     status = "ok",
@@ -182,7 +185,7 @@ app.MapGet("/api/health", (
     fileAvailable = OperatingSystem.IsLinux(),
     dockerAvailable = DockerCommandRunner.IsAvailable(dockerOptions.Value),
     systemMonitorAvailable = OperatingSystem.IsLinux(),
-    serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceOptions.Value),
+    serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceSettings.Current),
     packageAvailable = packageResolver.Backend is not null,
     timestamp = DateTimeOffset.UtcNow,
 }));

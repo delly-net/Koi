@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MoreFilled, Refresh } from '@element-plus/icons-vue'
+import { MoreFilled, Refresh, Setting } from '@element-plus/icons-vue'
 import {
   getService,
   getServiceLogs,
+  getServiceSettings,
   listServices,
+  saveServiceSettings,
   serviceAction,
   type ServiceAction,
   type ServiceDetail,
+  type ServiceSettings,
   type ServiceSummary,
 } from '@/api/services'
 import { ApiError } from '@/api/http'
@@ -26,6 +29,25 @@ const forbidden = ref(false)
 const forbiddenDetail = ref('')
 const unavailable = ref(false)
 const errorMessage = ref('')
+
+// ---------------- 服务管理设置（仅 root） ----------------
+const settingsAvailable = ref(false)
+const settingsVisible = ref(false)
+const settingsLoading = ref(false)
+const settingsSaving = ref(false)
+const settingsSnapshot = ref<ServiceSettings | null>(null)
+const settingsForm = reactive({
+  enabled: true,
+  systemctlPath: '',
+  journalctlPath: '',
+  allowedGroups: [] as string[],
+  commandTimeoutSeconds: 120,
+  maxOutputMiB: 4,
+  maxLogMiB: 2,
+  logTailDefault: 500,
+  logTailMax: 5000,
+})
+const groupSuggestions = ['sudo', 'wheel']
 
 const ACTION_LABELS: Record<ServiceAction, string> = {
   start: '启动',
@@ -214,6 +236,82 @@ function fileStateText(state: string): string {
   return state || '—'
 }
 
+// ---------------- 服务管理设置（仅 root） ----------------
+
+function bytesToMiB(bytes: number): number {
+  return Math.max(1, Math.round(bytes / (1024 * 1024)))
+}
+
+function applySettingsForm(value: ServiceSettings): void {
+  settingsForm.enabled = value.enabled
+  settingsForm.systemctlPath = value.systemctlPath
+  settingsForm.journalctlPath = value.journalctlPath
+  settingsForm.allowedGroups = [...value.allowedGroups]
+  settingsForm.commandTimeoutSeconds = value.commandTimeoutSeconds
+  settingsForm.maxOutputMiB = bytesToMiB(value.maxOutputBytes)
+  settingsForm.maxLogMiB = bytesToMiB(value.maxLogBytes)
+  settingsForm.logTailDefault = value.logTailDefault
+  settingsForm.logTailMax = value.logTailMax
+}
+
+/**
+ * 设置入口仅对 root 账号可见：读取成功即显示。
+ * 非 root 的 403 与非 Linux 的 503 都静默隐藏，不打扰页面。
+ */
+async function loadSettingsAvailability(): Promise<void> {
+  settingsLoading.value = true
+  try {
+    const value = await getServiceSettings()
+    settingsSnapshot.value = value
+    applySettingsForm(value)
+    settingsAvailable.value = true
+  } catch {
+    settingsAvailable.value = false
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function openSettings(): Promise<void> {
+  if (!settingsSnapshot.value) {
+    await loadSettingsAvailability()
+  }
+
+  if (settingsSnapshot.value) {
+    applySettingsForm(settingsSnapshot.value)
+    settingsVisible.value = true
+  }
+}
+
+async function saveSettings(): Promise<void> {
+  settingsSaving.value = true
+  try {
+    const saved = await saveServiceSettings({
+      enabled: settingsForm.enabled,
+      systemctlPath: settingsForm.systemctlPath.trim(),
+      journalctlPath: settingsForm.journalctlPath.trim(),
+      allowedGroups: settingsForm.allowedGroups
+        .map((group) => group.trim())
+        .filter((group) => group.length > 0),
+      commandTimeoutSeconds: settingsForm.commandTimeoutSeconds,
+      maxOutputBytes: Math.round(settingsForm.maxOutputMiB * 1024 * 1024),
+      maxLogBytes: Math.round(settingsForm.maxLogMiB * 1024 * 1024),
+      logTailDefault: settingsForm.logTailDefault,
+      logTailMax: settingsForm.logTailMax,
+    })
+
+    settingsSnapshot.value = saved
+    applySettingsForm(saved)
+    settingsVisible.value = false
+    ElMessage.success('设置已保存并立即生效')
+    await refresh()
+  } catch (error) {
+    showError(error)
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
 // ---------------- 服务日志 ----------------
 
 const logsVisible = ref(false)
@@ -293,6 +391,8 @@ function formatPid(value: number | null): string {
 
 onMounted(() => {
   void refresh()
+  // 静默探测设置权限，与列表加载并行；非 root 403 / 非 Linux 503 时入口保持隐藏。
+  void loadSettingsAvailability()
 })
 </script>
 
@@ -306,6 +406,15 @@ onMounted(() => {
         </span>
       </div>
       <div class="actions">
+        <el-tooltip v-if="settingsAvailable" content="服务管理设置" placement="bottom">
+          <el-button
+            :icon="Setting"
+            circle
+            :loading="settingsLoading"
+            aria-label="服务管理设置"
+            @click="openSettings"
+          />
+        </el-tooltip>
         <span v-if="lastUpdated" class="updated">更新于 {{ lastUpdated }}</span>
         <el-button :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
       </div>
@@ -479,6 +588,113 @@ onMounted(() => {
         </div>
       </div>
     </el-drawer>
+
+    <el-drawer
+      v-model="settingsVisible"
+      title="服务管理设置"
+      size="480px"
+      :close-on-click-modal="false"
+    >
+      <p class="settings-tip">
+        配置保存在 SQLite 通用配置表（功能标识 services），保存后立即生效，无需重启服务。
+      </p>
+      <el-form label-position="top" class="settings-form">
+        <el-divider content-position="left">基础</el-divider>
+        <el-form-item label="启用服务管理">
+          <el-switch v-model="settingsForm.enabled" />
+          <div class="form-hint">关闭后所有账号（含 root）都无法使用服务管理接口。</div>
+        </el-form-item>
+        <el-form-item label="systemctl 路径">
+          <el-input
+            v-model="settingsForm.systemctlPath"
+            placeholder="留空自动探测 /usr/bin/systemctl、/bin/systemctl 与 PATH"
+          />
+          <div class="form-hint">非空时必须是绝对路径；路径不存在会使服务管理返回 503。</div>
+        </el-form-item>
+        <el-form-item label="journalctl 路径">
+          <el-input
+            v-model="settingsForm.journalctlPath"
+            placeholder="留空自动探测 /usr/bin/journalctl、/bin/journalctl 与 PATH"
+          />
+          <div class="form-hint">仅影响服务日志读取；留空时按 systemd 常规位置探测。</div>
+        </el-form-item>
+        <el-form-item label="允许访问的用户组">
+          <el-select
+            v-model="settingsForm.allowedGroups"
+            class="full-width"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            placeholder="输入组名后按回车添加"
+          >
+            <el-option v-for="group in groupSuggestions" :key="group" :label="group" :value="group" />
+          </el-select>
+          <div class="form-hint">留空表示拒绝所有普通账号；root（uid 0）始终可访问。</div>
+        </el-form-item>
+
+        <el-divider content-position="left">超时</el-divider>
+        <el-form-item label="命令超时（秒）">
+          <el-input-number
+            v-model="settingsForm.commandTimeoutSeconds"
+            class="full-width"
+            :min="1"
+            :max="86400"
+            :step="10"
+            controls-position="right"
+          />
+          <div class="form-hint">默认 120 秒，需覆盖 systemd 默认 90 秒的服务停止等待时间。</div>
+        </el-form-item>
+
+        <el-divider content-position="left">上限</el-divider>
+        <el-form-item label="命令输出上限（MiB）">
+          <el-input-number
+            v-model="settingsForm.maxOutputMiB"
+            class="full-width"
+            :min="1"
+            :max="256"
+            controls-position="right"
+          />
+        </el-form-item>
+        <el-form-item label="服务日志上限（MiB）">
+          <el-input-number
+            v-model="settingsForm.maxLogMiB"
+            class="full-width"
+            :min="1"
+            :max="256"
+            controls-position="right"
+          />
+        </el-form-item>
+
+        <el-divider content-position="left">日志</el-divider>
+        <el-form-item label="默认行数">
+          <el-input-number
+            v-model="settingsForm.logTailDefault"
+            class="full-width"
+            :min="1"
+            :max="settingsForm.logTailMax"
+            :step="100"
+            controls-position="right"
+          />
+          <div class="form-hint">日志接口未指定 tail 时使用的行数。</div>
+        </el-form-item>
+        <el-form-item label="行数上限">
+          <el-input-number
+            v-model="settingsForm.logTailMax"
+            class="full-width"
+            :min="1"
+            :max="100000"
+            :step="100"
+            controls-position="right"
+          />
+          <div class="form-hint">请求超过该值时按上限夹紧；默认行数不能大于该值。</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="settingsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -627,5 +843,32 @@ onMounted(() => {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.settings-tip {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  background: #f4f8ff;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  color: #5c6b82;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-form :deep(.el-divider) {
+  margin: 4px 0 16px;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.form-hint {
+  width: 100%;
+  margin-top: 4px;
+  color: #8a919f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

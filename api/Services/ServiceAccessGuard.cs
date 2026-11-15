@@ -47,7 +47,7 @@ public static class ServiceAccessGuard
             return (Problem(
                 StatusCodes.Status503ServiceUnavailable,
                 "systemctl 不可用",
-                "未找到 systemctl 可执行文件，请确认系统使用 systemd 或在 Koi:Services:SystemctlPath 中配置路径。"), userName);
+                "未找到 systemctl 可执行文件，请确认系统使用 systemd，或在服务管理设置中配置 systemctl 路径。"), userName);
         }
 
         if (string.IsNullOrEmpty(userName))

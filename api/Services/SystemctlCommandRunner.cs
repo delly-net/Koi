@@ -2,7 +2,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
-using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Services;
 
@@ -26,7 +25,7 @@ public sealed record ServiceCommandResult(
 /// 输出按字节上限截断，超限或超时都会终止整个进程树，避免管道死锁与内存膨胀。
 /// </remarks>
 public sealed class SystemctlCommandRunner(
-    IOptions<ServiceOptions> options,
+    ServiceSettingsService settingsService,
     ILogger<SystemctlCommandRunner> logger)
 {
     private static readonly string[] SystemctlCandidatePaths =
@@ -41,7 +40,7 @@ public sealed class SystemctlCommandRunner(
         "/bin/journalctl",
     ];
 
-    private ServiceOptions Settings => options.Value;
+    private ServiceOptions Settings => settingsService.Current;
 
     /// <summary>当前平台能否执行 systemctl（Linux 且能找到可执行文件）。</summary>
     public static bool IsAvailable(ServiceOptions settings) =>
@@ -67,7 +66,7 @@ public sealed class SystemctlCommandRunner(
         if (executable is null)
         {
             return NotAvailable(
-                "未找到 systemctl 可执行文件，请确认系统使用 systemd 或在 Koi:Services:SystemctlPath 中配置路径。");
+                "未找到 systemctl 可执行文件，请确认系统使用 systemd，或在服务管理设置中配置 systemctl 路径。");
         }
 
         return RunAsync(executable, arguments, timeout, maxOutputBytes, cancellationToken);
@@ -89,7 +88,7 @@ public sealed class SystemctlCommandRunner(
         if (executable is null)
         {
             return NotAvailable(
-                "未找到 journalctl 可执行文件，请确认系统使用 systemd 或在 Koi:Services:JournalctlPath 中配置路径。");
+                "未找到 journalctl 可执行文件，请确认系统使用 systemd，或在服务管理设置中配置 journalctl 路径。");
         }
 
         return RunAsync(executable, arguments, timeout, maxOutputBytes, cancellationToken);

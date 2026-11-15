@@ -25,7 +25,8 @@ are implemented.
   manager opens in the editor (also stored in the SQLite settings table, edited by root from the
   text editor page), docker-CLI-backed container/image management restricted to configured
   groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
-  restricted to configured groups, apt/dnf/yum/pacman/zypper-backed application management
+  restricted to configured groups, with its settings stored in the SQLite settings table and
+  edited by root through a settings drawer, apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
   filtering, background jobs for install/remove/upgrade/refresh, and software source management)
   restricted to configured groups, Linux `/proc`-backed server status
@@ -77,7 +78,8 @@ generic settings table (`Feature = files`).
   `Editor/` (text-association options, settings service/validator, read-only associations and
   root-only settings endpoints),
   `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
-  `Services/` (systemctl/journalctl runner, group authorization guard, REST endpoints),
+  `Services/` (systemctl/journalctl runner, group authorization guard, settings
+  service/validator, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
   service, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
@@ -196,7 +198,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
-  `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET /api/system/status`,
+  `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
+  `GET /api/system/status`,
   and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*` and
   `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
@@ -361,16 +364,29 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   masked/unsupported operation, 413 output too large, 503 disabled/non-Linux/systemctl
   missing/systemd not running, 504 timeout.
 - Service authorization mirrors Docker: every `/api/services/**` endpoint requires a session and
-  membership in `Koi:Services:AllowedGroups` (default `["sudo","wheel"]`), resolved with
+  membership in the configured `AllowedGroups` (default `["sudo","wheel"]`), resolved with
   `id -nG -- <user>` so NSS/LDAP groups count. uid 0 is always allowed even when the list is
   empty. The check order is Enabled → Linux → systemctl availability → session → account name →
   root → group list → membership. systemctl is equivalent to host root, so the service account
   must be trusted. The UI warns that stopping, restarting or disabling the Koi service itself
   interrupts the current page, but the backend deliberately does not block it.
-- Service config keys: `Koi:Services:Enabled`, `SystemctlPath` / `JournalctlPath` (empty =
-  auto-detect `/usr/bin/...`, `/bin/...`, then `PATH`), `AllowedGroups`, `CommandTimeoutSeconds`
-  (120, above systemd's 90-second stop timeout), `MaxOutputBytes` (4 MiB), `MaxLogBytes` (2 MiB),
-  `LogTailDefault` (500), `LogTailMax` (5000).
+- Service settings are **not** read from `appsettings.json` (`Koi:Services` was removed): the
+  `ServiceOptions` code defaults are `Enabled=true`, `SystemctlPath` / `JournalctlPath` empty
+  (auto-detect `/usr/bin/...`, `/bin/...`, then `PATH`), `AllowedGroups=["sudo","wheel"]`,
+  `CommandTimeoutSeconds=120` (above systemd's 90-second stop timeout), `MaxOutputBytes=4 MiB`,
+  `MaxLogBytes=2 MiB`, `LogTailDefault=500`, `LogTailMax=5000`. They are overridden by the SQLite
+  generic settings table (`Feature = services`) through `ServiceSettingsService`; on first start
+  with no `services` row the code defaults are used directly — the legacy `Koi:Services` section
+  (including the `/etc/koi/appsettings.json` overlay) is deliberately **not** migrated and has no
+  effect. `GET/PUT /api/services/settings` require a session and uid 0 (resolved through
+  `getpwnam_r`, not a name comparison) and deliberately skip the `Enabled`/systemctl availability
+  checks so a disabled or broken configuration can be repaired; non-root gets 403. PUT validates
+  `SystemctlPath`/`JournalctlPath` (empty or absolute, ≤4096 characters, no control characters),
+  group names, `CommandTimeoutSeconds` 1–86400, output/log caps 1 KiB–256 MiB, and
+  `LogTailDefault`/`LogTailMax` 1–100000 with default ≤ max. Saves replace the `Current` snapshot
+  atomically and raise `Changed`; every consumer (endpoints, `SystemctlCommandRunner`, health)
+  reads `Current` per request, so nothing may cache `IOptions<ServiceOptions>` (that would make
+  saves ineffective). `/api/health` exposes `serviceAvailable` from the same snapshot.
 - Application management (`api/Packages/`, `/api/packages/**`) runs apt, dnf, yum, pacman or
   zypper from the main process through `Process.Start` + `ArgumentList` — never a shell, never a
   fixed `sh -c` wrapper. `PackageManagerDetector` uses the `Manager` value from the settings
@@ -634,6 +650,15 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   itself interrupts the current page. Logs open in a dialog with a tail selector
   (`journalctl` snapshot, not follow); detail opens in a drawer fed by `systemctl show`. 403 (not
   in an allowed group) and 503 (systemd unavailable) render as persistent alerts instead of toasts.
+  The top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="服务管理设置"`)
+  **only to root**: on mount the page silently calls `GET /api/services/settings` (in parallel
+  with the list load); success shows the button, any failure (403 for non-root, 503 on non-Linux)
+  hides it without an error toast. The click opens a 480 px `el-drawer` editing every
+  `ServiceOptions` value — enable switch, `systemctl`/`journalctl` paths (empty = auto-detect),
+  allowed groups as a multi-select/creatable list, command timeout, output/log caps (edited in
+  MiB and converted to bytes) and the log tail default/max. `保存` sends `PUT
+  /api/services/settings`, shows `设置已保存并立即生效`, and refreshes the list; saving
+  `Enabled=false` therefore surfaces the existing 503 alert immediately.
 - The 应用管理 tab (`ui/src/views/PackageView.vue`, workspace key `package`) has four inner tabs:
   已安装 / 安装 / 更新 / 软件源. It fetches the manager status on mount, loads each data tab on
   first activation, and the manual `刷新` button reloads the status plus the active tab.
