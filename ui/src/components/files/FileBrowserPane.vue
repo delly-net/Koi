@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
 import {
   CopyDocument,
   Document,
@@ -8,6 +8,7 @@ import {
   Folder,
   FolderAdd,
   MoreFilled,
+  Position,
   Refresh,
   Upload,
 } from '@element-plus/icons-vue'
@@ -44,6 +45,8 @@ interface EditState {
 const props = defineProps<{
   /** 页签初始目录；切换目录后由面板自行维护 currentPath。 */
   initialPath: string
+  /** 登录用户的家目录，用于把跳转输入框中的 ~ 展开为绝对路径。 */
+  homePath: string
 }>()
 
 const emit = defineEmits<{
@@ -72,6 +75,12 @@ const clipboard = computed(() => filesClipboard.clipboard)
 const editDialog = ref(false)
 const editLoading = ref(false)
 const editState = ref<EditState>({ mode: 'mkdir', title: '', value: '' })
+
+// ---------------- 路径跳转 ----------------
+const jumpDialog = ref(false)
+const jumpValue = ref('')
+const jumpLoading = ref(false)
+const jumpInput = ref<InputInstance | null>(null)
 
 const breadcrumbs = computed<Crumb[]>(() => {
   if (!currentPath.value) {
@@ -103,7 +112,8 @@ function joinPath(directory: string, name: string): string {
   return directory === '/' ? `/${name}` : `${directory.replace(/\/+$/, '')}/${name}`
 }
 
-async function load(path?: string): Promise<void> {
+/** 返回是否加载成功，供跳转对话框决定要不要关闭。 */
+async function load(path?: string): Promise<boolean> {
   loading.value = true
   try {
     const data = await listFiles(path)
@@ -113,10 +123,67 @@ async function load(path?: string): Promise<void> {
     truncated.value = data.truncated
     selection.value = []
     emit('path-change', data.path)
+    return true
   } catch (error) {
     showError(error)
+    return false
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * 把跳转输入解析为绝对路径：
+ * `/` 开头原样使用，`~` 与 `~/...` 展开为家目录，其余按当前目录的相对路径拼接。
+ * 存在性、目录类型、允许根与权限仍由后端校验。
+ */
+function resolveJumpPath(raw: string): string | null {
+  const value = raw.trim()
+  if (!value) {
+    ElMessage.warning('路径不能为空')
+    return null
+  }
+
+  if (value === '~' || value.startsWith('~/')) {
+    if (!props.homePath) {
+      ElMessage.warning('尚未获取家目录，请稍后重试')
+      return null
+    }
+
+    const rest = value.slice(1).replace(/^\/+/, '')
+    return rest ? joinPath(props.homePath, rest) : props.homePath
+  }
+
+  if (value.startsWith('/')) {
+    return value
+  }
+
+  return joinPath(currentPath.value || '/', value)
+}
+
+function openJump(): void {
+  jumpValue.value = currentPath.value
+  jumpDialog.value = true
+  void nextTick(() => jumpInput.value?.focus())
+}
+
+async function submitJump(): Promise<void> {
+  if (jumpLoading.value) {
+    return
+  }
+
+  const target = resolveJumpPath(jumpValue.value)
+  if (!target) {
+    return
+  }
+
+  jumpLoading.value = true
+  try {
+    if (await load(target)) {
+      jumpDialog.value = false
+    }
+  } finally {
+    jumpLoading.value = false
   }
 }
 
@@ -470,6 +537,8 @@ onMounted(() => {
         </el-breadcrumb-item>
       </el-breadcrumb>
 
+      <el-button size="small" :icon="Position" @click="openJump">跳转</el-button>
+
       <el-button
         type="danger"
         plain
@@ -584,6 +653,24 @@ onMounted(() => {
         <el-button type="primary" :loading="editLoading" @click="submitEdit">确定</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="jumpDialog" title="跳转到目录" width="480px">
+      <el-input
+        ref="jumpInput"
+        v-model="jumpValue"
+        clearable
+        placeholder="输入目标目录，如 /var/log、logs 或 ~"
+        @keyup.enter="submitJump"
+      />
+      <div class="jump-hint">
+        支持 / 开头的绝对路径、相对当前目录的路径，以及 ~（家目录）与 ~/子目录；
+        可访问范围仍由登录用户的系统权限决定。
+      </div>
+      <template #footer>
+        <el-button @click="jumpDialog = false">取消</el-button>
+        <el-button type="primary" :loading="jumpLoading" @click="submitJump">跳转</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -693,6 +780,13 @@ onMounted(() => {
 
 .hidden-input {
   display: none;
+}
+
+.jump-hint {
+  margin-top: 8px;
+  color: #8a919f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* 下拉菜单传送到 body，scoped 样式无法命中，这里用全局选择器标记危险项 */

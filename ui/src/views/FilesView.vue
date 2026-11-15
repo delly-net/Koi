@@ -272,6 +272,7 @@ onMounted(() => {
       >
         <FileBrowserPane
           :initial-path="tab.initialPath"
+          :home-path="homePath"
           @path-change="updateTabTitle(tab.id, $event)"
           @open-in-new-tab="addTab"
         />

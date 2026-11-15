@@ -54,7 +54,12 @@ longer opens entries).
 Inside the single `文件管理` workspace tab the file manager is itself tabbed: every inner tab
 (`FileBrowserPane` in `ui/src/components/files/`) browses an independent directory and keeps its own
 path, listing, selection and loading state. The `+` button opens a new tab at the account home
-directory, and a directory row's `操作` menu offers `在新页签打开`. The copy/cut clipboard is a
+directory, and a directory row's `操作` menu offers `在新页签打开`. Each tab's path bar carries a
+`跳转` button (`Position` icon) next to the breadcrumbs: it opens a dialog prefilled with the
+current directory, where a `/`-prefixed path is used as-is, `~` / `~/...` expands to the account
+home directory (passed down as the `homePath` prop), and anything else is resolved relative to the
+current directory. The backend still validates the target (allowed roots, permissions, existence);
+a failed jump keeps the current directory and the dialog input so it can be corrected. The copy/cut clipboard is a
 Pinia store (`ui/src/stores/filesClipboard.ts`) shared by all file tabs, so entries copied or cut in
 one tab can be pasted into the directory of another; a successful cut-paste clears it, closing a
 tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost when the workspace
