@@ -21,7 +21,9 @@ are implemented.
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST (file settings stored in the SQLite generic settings table and edited by
-  root through a settings drawer), docker-CLI-backed container/image management restricted to configured
+  root through a settings drawer), text-association settings that decide which files the file
+  manager opens in the editor (also stored in the SQLite settings table, edited by root from the
+  text editor page), docker-CLI-backed container/image management restricted to configured
   groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
@@ -31,8 +33,8 @@ are implemented.
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page, a
-  container manager page, a systemd service manager page, an application manager page with a
+  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page with a
+  root-only extension settings drawer, a container manager page, a systemd service manager page, an application manager page with a
   live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
@@ -72,14 +74,17 @@ generic settings table (`Feature = files`).
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, settings service/validator, file helper process, operation service,
   REST endpoints),
+  `Editor/` (text-association options, settings service/validator, read-only associations and
+  root-only settings endpoints),
   `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
   service, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
-  docker API, service API and package API types), `src/config/` (runtime config incl. text file
-  associations), `src/stores/` (Pinia auth, workspace tab and editor tab state), `src/router/`,
+  editor association/settings API, docker API, service API and package API types), `src/config/`
+  (runtime config and the reactive text-association rules), `src/stores/` (Pinia auth, workspace
+  tab and editor tab state), `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
   service / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
@@ -191,7 +196,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
-  `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*`, `/api/services/*` and
+  `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET /api/system/status`,
+  and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*` and
   `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
   back to the SPA.
@@ -265,6 +271,24 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   512 MiB ceiling plus 1 MiB overhead; the per-request limit is the current `MaxUploadBytes`, so
   raising it within the ceiling needs no restart. Uploads are written to a temp file in the
   destination directory and renamed into place, so an interrupted upload leaves no partial target.
+- Text-association settings (which files the file manager treats as text and opens in the editor)
+  are **not** read from `appsettings.json` or from the frontend `conf/setting.json`: the runtime
+  source is the SQLite generic settings table (`Feature = editor`) through `EditorSettingsService`,
+  and the option set is a single `TextExtensions` string array (0–500 rules, each 1–64 characters,
+  no path separators, wildcards, whitespace or control characters; lowercase, de-duplicated).
+  `EditorOptions.DefaultTextExtensions` is the seed/fallback and must stay in sync with the
+  frontend `DEFAULT_TEXT_EXTENSIONS`. An empty array is valid and means “no text files”.
+  `GET /api/editor/associations` requires a session and is readable by every signed-in account
+  (no platform/enabled check) so the file manager can always classify entries;
+  `GET/PUT /api/editor/settings` require uid 0 (resolved through `getpwnam_r`, non-root → 403),
+  deliberately skip platform/`Enabled` checks so a broken configuration can be repaired, validate
+  the payload server-side and return the saved object. Saves replace the `Current` snapshot
+  atomically and raise `Changed`; never cache `IOptions<EditorOptions>`.
+  A matching rule is literal: rules starting with `.` match the complete file name or a suffix
+  (`.txt`, `.gitignore`), other rules match the complete name or a `.<rule>` suffix
+  (`dockerfile`, `makefile`). Frontend rules are reactive (`appConfig.ts` holds them in a `ref`),
+  so a root save immediately re-renders open file-manager tabs; other browsers pick the change up
+  on refresh or login because `loadEditorAssociations()` runs after session restore/login.
 - File helper framing has two separate limits: requests (main → helper) are capped at 64 KiB,
   responses (helper → main) at 32 MiB because a directory listing carries every entry in one JSON
   frame. Never stop reading a frame without terminating the helper: if the parent rejects an
@@ -555,10 +579,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
   `ui/dist/conf/setting.json` to retarget the backend without rebuilding. When the backend serves
   the SPA, this file is deliberately sent with `no-store` so edits take effect immediately.
-  `fileAssociations.text` in the same file lists the extension/name rules (`".txt"`, `".md"`,
-  `"dockerfile"`, …) that the UI treats as text: such files open in the editor from the row menu
-  `打开` / `编辑文本` or by clicking the name. Missing or invalid rules fall back to a built-in
-  list; an explicit empty array means “no text files”. Production deploys replace
+  The former `fileAssociations.text` field is **deprecated and no longer read**: text associations
+  now come from the backend SQLite settings (`Feature = editor`) and are maintained by root in the
+  text editor page (see the text-association bullet above). Files matching a rule open in the
+  editor from the row menu `打开` / `编辑文本` or by clicking the name. The field may remain in
+  existing `setting.json` files but has no effect. Production deploys replace
   `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
 - Login page persistence (`ui/src/views/LoginView.vue` + `ui/src/utils/rememberedLogin.ts`): after a
   successful login the user name is always stored in `localStorage['koi.login.lastUserName']` and
@@ -577,7 +602,13 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `src/stores/editor.ts`, so switching workspace tabs preserves unsaved content; a browser refresh
   loses it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
   lets the user overwrite (`expectedModifiedAt=0`) or reload. The editor is a plain monospace
-  textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow.
+  textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow. Its
+  top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="文本编辑设置"`)
+  **only to root**: on mount the page silently calls `GET /api/editor/settings`; success shows the
+  button, any failure (403 for non-root, 503 on non-Linux) hides it without an error toast. The
+  click opens a 480 px `el-drawer` editing `TextExtensions` as a multi-select/creatable tag list;
+  `保存` sends `PUT /api/editor/settings`, shows `设置已保存并立即生效`, and applies the returned
+  rules through `setTextExtensions()` so open file-manager tabs re-render immediately.
 - The 容器管理 tab (`ui/src/views/DockerView.vue`, workspace key `docker`) has three inner tabs:
   容器 / 镜像 / 系统. Data is fetched on mount and only on the manual `刷新` button — there is no
   polling timer; refreshing reloads the status plus the visible inner tab. Container rows collapse

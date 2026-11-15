@@ -1,17 +1,15 @@
+import { ref } from 'vue'
+
 /**
  * 应用运行时配置：由 public/conf/setting.json 提供，构建后可直接修改以切换后端地址，
  * 无需重新构建前端。配置在 main.ts 中先于路由安装加载。
+ *
+ * 文本文件关联规则已改为由后端 SQLite 配置（Feature = editor）维护，
+ * setting.json 中的 fileAssociations.text 不再读取。
  */
-export interface FileAssociationsConfig {
-  /** 按文本方式打开的扩展名/文件名规则；由系统配置提供。 */
-  text?: unknown
-}
-
 export interface AppConfig {
   /** 后端对外根地址（不含 /api）；空串表示同源。 */
   baseUrl?: string
-  /** 文件关联信息：决定哪些文件可通过【打开】/【编辑文本】进入在线编辑。 */
-  fileAssociations?: FileAssociationsConfig
 }
 
 /** 配置文件通过 HTTP 直接访问，不参与打包。 */
@@ -22,8 +20,8 @@ const DEFAULT_BACKEND_ROOT = ''
 const API_PREFIX = '/api'
 
 /**
- * 未提供有效 fileAssociations.text 时使用的内置文本关联规则。
- * 部署配置（ui/public/conf 与 deploy/linux/conf）应显式列出，这里是启动兜底。
+ * 内置文本关联规则：后端 /api/editor/associations 不可用或返回非法内容时的兜底值。
+ * 与后端 EditorOptions.DefaultTextExtensions 保持一致。
  */
 const DEFAULT_TEXT_EXTENSIONS = [
   '.txt',
@@ -85,7 +83,11 @@ const DEFAULT_TEXT_EXTENSIONS = [
 ]
 
 let backendRoot = DEFAULT_BACKEND_ROOT
-let textExtensions: string[] = [...DEFAULT_TEXT_EXTENSIONS]
+/**
+ * 当前生效的文本关联规则。使用 ref 保存，文件管理模板中的 isTextFile()
+ * 会随 root 保存扩展名设置而响应式刷新。
+ */
+const textExtensions = ref<string[]>([...DEFAULT_TEXT_EXTENSIONS])
 
 /**
  * 归一化后端根地址，统一为「不含 /api 的根地址」：
@@ -124,7 +126,7 @@ export function getBackendRoot(): string {
 
 /** 当前生效的文本文件关联规则（副本，避免调用方修改内部状态）。 */
 export function getTextExtensions(): string[] {
-  return [...textExtensions]
+  return [...textExtensions.value]
 }
 
 /** 规范化文件关联规则：去空白、转小写、去重；非数组返回 null。 */
@@ -150,8 +152,8 @@ export function normalizeExtensions(raw: unknown): string[] | null {
 
 /** 应用文本文件关联规则（空数组表示不把任何文件视为文本）。 */
 export function setTextExtensions(rules: string[]): void {
-  textExtensions = [...rules]
-  console.info(`[配置] 文本文件关联：${textExtensions.length} 条规则`)
+  textExtensions.value = [...rules]
+  console.info(`[配置] 文本文件关联：${textExtensions.value.length} 条规则`)
 }
 
 /**
@@ -165,7 +167,7 @@ export function isTextFile(nameOrPath: string): boolean {
     return false
   }
 
-  return textExtensions.some((rule) => {
+  return textExtensions.value.some((rule) => {
     if (rule.startsWith('.')) {
       return name === rule || name.endsWith(rule)
     }
@@ -217,13 +219,6 @@ export async function loadAppConfig(): Promise<void> {
       setBaseUrl(config.baseUrl)
     } else {
       console.warn(`[配置] ${CONFIG_URL} 中 baseUrl 不是字符串，使用同源默认值`)
-    }
-
-    const textRules = normalizeExtensions(config.fileAssociations?.text)
-    if (textRules) {
-      setTextExtensions(textRules)
-    } else {
-      console.warn(`[配置] ${CONFIG_URL} 未提供有效的 fileAssociations.text，使用内置文本关联`)
     }
   } catch (error) {
     console.warn(`[配置] 加载 ${CONFIG_URL} 失败，使用同源默认值：`, error)

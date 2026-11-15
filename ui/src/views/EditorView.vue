@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Setting } from '@element-plus/icons-vue'
 import { useEditorStore, type EditorTab } from '@/stores/editor'
+import { getEditorSettings, saveEditorSettings, type EditorSettings } from '@/api/editor'
+import { setTextExtensions } from '@/config/appConfig'
 import { readTextFile, saveTextFile } from '@/api/files'
 import { ApiError } from '@/api/http'
 
@@ -182,7 +185,86 @@ function onBeforeUnload(event: BeforeUnloadEvent): void {
   }
 }
 
-onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
+// ---------------- 文本编辑设置（仅 root） ----------------
+const settingsAvailable = ref(false)
+const settingsVisible = ref(false)
+const settingsLoading = ref(false)
+const settingsSaving = ref(false)
+const settingsSnapshot = ref<EditorSettings | null>(null)
+const settingsForm = reactive({
+  textExtensions: [] as string[],
+})
+
+function applySettingsForm(value: EditorSettings): void {
+  settingsForm.textExtensions = [...value.textExtensions]
+}
+
+/**
+ * 设置入口仅对 root 账号可见：读取成功即显示。
+ * 非 root 的 403 与非 Linux 的 503 都静默隐藏，不打扰页面。
+ */
+async function loadSettingsAvailability(): Promise<void> {
+  settingsLoading.value = true
+  try {
+    const value = await getEditorSettings()
+    settingsSnapshot.value = value
+    applySettingsForm(value)
+    settingsAvailable.value = true
+  } catch {
+    settingsAvailable.value = false
+  } finally {
+    settingsLoading.value = false
+  }
+}
+
+async function openSettings(): Promise<void> {
+  if (!settingsSnapshot.value) {
+    await loadSettingsAvailability()
+  }
+
+  if (settingsSnapshot.value) {
+    applySettingsForm(settingsSnapshot.value)
+    settingsVisible.value = true
+  }
+}
+
+/** 保存前规范化：去空白、转小写、去重、丢弃空项（后端仍会再次校验）。 */
+function normalizeRules(rules: string[]): string[] {
+  const result: string[] = []
+  for (const item of rules) {
+    const value = item.trim().toLowerCase()
+    if (value && !result.includes(value)) {
+      result.push(value)
+    }
+  }
+
+  return result
+}
+
+async function saveSettings(): Promise<void> {
+  settingsSaving.value = true
+  try {
+    const saved = await saveEditorSettings({
+      textExtensions: normalizeRules(settingsForm.textExtensions),
+    })
+    settingsSnapshot.value = saved
+    applySettingsForm(saved)
+
+    // 立即应用到文件管理中的文本关联判断，无需刷新页面。
+    setTextExtensions(saved.textExtensions)
+    settingsVisible.value = false
+    ElMessage.success('设置已保存并立即生效')
+  } catch (error) {
+    showError(error)
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('beforeunload', onBeforeUnload)
+  void loadSettingsAvailability()
+})
 onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
 </script>
 
@@ -211,6 +293,16 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
         >
           重新加载
         </el-button>
+        <el-tooltip v-if="settingsAvailable" content="文本编辑设置" placement="bottom">
+          <el-button
+            class="settings-button"
+            :icon="Setting"
+            circle
+            :loading="settingsLoading"
+            aria-label="文本编辑设置"
+            @click="openSettings"
+          />
+        </el-tooltip>
       </div>
     </div>
 
@@ -260,6 +352,48 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <el-drawer
+      v-model="settingsVisible"
+      title="文本编辑设置"
+      size="480px"
+      :close-on-click-modal="false"
+    >
+      <p class="settings-tip">
+        配置保存在 SQLite 通用配置表（功能标识 editor），保存后立即生效，无需重启服务。
+      </p>
+      <el-form label-position="top" class="settings-form">
+        <el-form-item label="文本文件扩展名">
+          <el-select
+            v-model="settingsForm.textExtensions"
+            class="full-width"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="输入扩展名后按回车添加，如 .txt"
+          >
+            <el-option
+              v-for="item in settingsForm.textExtensions"
+              :key="item"
+              :label="item"
+              :value="item"
+            />
+          </el-select>
+          <div class="form-hint">
+            这些规则决定「文件管理」中哪些文件可通过【打开】/【编辑文本】进入在线编辑。
+            不区分大小写；以 . 开头的规则按完整文件名或后缀匹配（如 .txt、.gitignore），
+            不带点的规则按完整文件名或 .规则 后缀匹配（如 dockerfile、makefile）。
+            留空表示不把任何文件视为文本。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="settingsSaving" @click="settingsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -298,8 +432,36 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
 
 .actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+
+.settings-button {
+  flex: none;
+}
+
+.settings-tip {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  background: #f4f8ff;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  color: #5c6b82;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.form-hint {
+  width: 100%;
+  margin-top: 4px;
+  color: #8a919f;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .empty {

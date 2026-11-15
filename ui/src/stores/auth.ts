@@ -6,6 +6,7 @@ import {
   logout as logoutRequest,
   type AuthUser,
 } from '@/api/auth'
+import { loadEditorAssociations } from '@/api/editor'
 import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -25,6 +26,8 @@ export const useAuthStore = defineStore('auth', () => {
 
     try {
       user.value = await fetchCurrentUser()
+      // 文本关联规则来自后端配置，登录态确认后应用（失败时保留内置规则）。
+      await loadEditorAssociations()
     } catch {
       user.value = null
     } finally {
@@ -37,6 +40,8 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       user.value = await loginRequest(userName, password)
       initialized.value = true
+      // 登录后立即使用后端维护的文本关联规则，保证文件管理判断与设置一致。
+      await loadEditorAssociations()
       // 新会话从空编辑器、空文件剪贴板与首页标签开始，避免上一个用户的状态串到当前用户。
       useEditorStore().reset()
       useFilesClipboardStore().reset()

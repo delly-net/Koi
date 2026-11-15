@@ -3,6 +3,7 @@ using Koi.Api.Auth;
 using Koi.Api.Configuration;
 using Koi.Api.Data;
 using Koi.Api.Docker;
+using Koi.Api.Editor;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Monitor;
@@ -68,6 +69,8 @@ builder.Services.AddSingleton<TerminalSessionManager>();
 // 文件管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FileSettingsService>();
 builder.Services.AddSingleton<FileOperationService>();
+// 文本编辑配置（文本关联扩展名）同样来自 SQLite 通用配置表（FeatureConfigs）。
+builder.Services.AddSingleton<EditorSettingsService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
 builder.Services.AddSingleton<SystemMonitorService>();
 builder.Services.AddSingleton<SystemctlCommandRunner>();
@@ -142,6 +145,9 @@ await app.Services.GetRequiredService<TerminalSettingsService>().LoadAsync();
 // 文件管理配置在启动时加载；数据库无记录时把旧 Koi:Files 节一次性迁移进来。
 await app.Services.GetRequiredService<FileSettingsService>().LoadAsync();
 
+// 文本编辑配置在启动时加载；数据库无记录时写入内置默认扩展名规则。
+await app.Services.GetRequiredService<EditorSettingsService>().LoadAsync();
+
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -184,6 +190,7 @@ app.MapGet("/api/health", (
 app.MapAuthEndpoints();
 app.MapTerminalEndpoints();
 app.MapFileEndpoints();
+app.MapEditorEndpoints();
 app.MapDockerEndpoints();
 app.MapSystemMonitorEndpoints();
 app.MapServiceEndpoints();
