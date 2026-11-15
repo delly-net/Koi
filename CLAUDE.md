@@ -24,7 +24,8 @@ are implemented.
   root through a settings drawer), text-association settings that decide which files the file
   manager opens in the editor (also stored in the SQLite settings table, edited by root from the
   text editor page), docker-CLI-backed container/image management restricted to configured
-  groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
+  groups, with its settings stored in the SQLite settings table and edited by root through a
+  settings drawer, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, with its settings stored in the SQLite settings table and
   edited by root through a settings drawer, apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
@@ -77,7 +78,8 @@ generic settings table (`Feature = files`).
   REST endpoints),
   `Editor/` (text-association options, settings service/validator, read-only associations and
   root-only settings endpoints),
-  `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
+  `Docker/` (docker CLI runner, group authorization guard, settings service/validator, REST
+  endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, settings
   service/validator, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
@@ -199,7 +201,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
-  `GET /api/system/status`,
+  `GET/PUT /api/docker/settings`, `GET /api/system/status`,
   and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*` and
   `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
@@ -309,7 +311,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   set for stable output, and container/image list, logs and stats are parsed from
   `--format '{{json .}}'` output.
 - Docker authorization: every `/api/docker/**` endpoint requires a session and membership in
-  `Koi:Docker:AllowedGroups` (default `["docker"]`); membership is resolved with
+  the configured `AllowedGroups` (stored in the SQLite settings table, default `["docker"]`);
+  membership is resolved with
   `id -nG -- <user>` so NSS/LDAP groups count, and non-members get 403. The exception is uid 0
   (root): it is resolved through `getpwnam_r` and always allowed, even when `AllowedGroups` is
   empty — root already equals the host administrator, and the list only constrains ordinary
@@ -317,8 +320,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   socket is equivalent to host root, so the service account must be trusted and the UI states
   this explicitly. Read endpoints are safe; pull/prune/remove are available to every allowed user
   (there is no finer-grained role).
-- Docker API (`/api/docker`, session cookie required; non-Linux, `Koi:Docker:Enabled=false` or a
-  missing docker executable → 503; non-member → 403): `GET /status`, `GET /containers`,
+- Docker API (`/api/docker`, session cookie required; non-Linux, `Enabled=false` in the Docker
+  settings or a missing docker executable → 503; non-member → 403): `GET /settings` and
+  `PUT /settings` (root only), `GET /status`, `GET /containers`,
   `GET /containers/{id}`, `POST /containers/{id}/{start|stop|restart|pause|unpause}`,
   `DELETE /containers/{id}?force=&volumes=`, `GET /containers/{id}/logs?tail=&timestamps=`,
   `GET /stats`, `GET /images`, `POST /images/pull` `{reference}`, `POST /images/tag`
@@ -339,12 +343,25 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   normally the image ID, which also lets `<none>` rows be tagged, and only local references are
   created (no push). The inspect/tag pair is not atomic: a tag created in that window can still be
   overwritten.
-- Docker config keys: `Koi:Docker:Enabled`, `DockerPath` (empty = auto-detect
-  `/usr/bin/docker`, `/usr/local/bin/docker`, `/bin/docker`), `AllowedGroups`,
-  `CommandTimeoutSeconds` (60), `PullTimeoutSeconds` (600), `MaxOutputBytes` (4 MiB),
-  `MaxLogBytes` (2 MiB), `LogTailDefault` (500), `LogTailMax` (5000). The deployment account (the
-  `koi.service` user) must be a member of the configured group or the module returns 403 for
-  everyone.
+- Docker settings are **not** read from `appsettings.json` (`Koi:Docker` was removed): the
+  `DockerOptions` code defaults are `Enabled=true`, `DockerPath` empty (auto-detect
+  `/usr/bin/docker`, `/usr/local/bin/docker`, `/bin/docker`, then `PATH`),
+  `AllowedGroups=["docker"]`, `CommandTimeoutSeconds=60`, `PullTimeoutSeconds=600`,
+  `MaxOutputBytes=4 MiB`, `MaxLogBytes=2 MiB`, `LogTailDefault=500`, `LogTailMax=5000`. They are
+  overridden by the SQLite generic settings table (`Feature = docker`) through
+  `DockerSettingsService`; on first start with no `docker` row the code defaults are used directly
+  — the legacy `Koi:Docker` section (including the `/etc/koi/appsettings.json` overlay) is
+  deliberately **not** migrated and has no effect. `GET/PUT /api/docker/settings` require a
+  session and uid 0 (resolved through `getpwnam_r`, not a name comparison) and deliberately skip
+  the `Enabled`/Linux/docker-availability checks so a disabled or broken configuration can be
+  repaired; non-root gets 403. PUT validates `DockerPath` (empty or absolute, ≤4096 characters,
+  no control characters), group names, `CommandTimeoutSeconds`/`PullTimeoutSeconds` 1–86400,
+  output/log caps 1 KiB–256 MiB, and `LogTailDefault`/`LogTailMax` 1–100000 with default ≤ max.
+  Saves replace the `Current` snapshot atomically and raise `Changed`; every consumer (endpoints,
+  `DockerCommandRunner`, health) reads `Current` per request/command, so nothing may cache
+  `IOptions<DockerOptions>` (that would make saves ineffective). `/api/health` exposes
+  `dockerAvailable` from the same snapshot. The deployment account (the `koi.service` user) must
+  be a member of the configured group or the module returns 403 for everyone.
 - Service management (`api/Services/`, `/api/services/**`) runs the systemctl CLI from the main
   process through `Process.Start` + `ArgumentList` — never a shell — with a fixed whitelist
   (`list-units`, `list-unit-files`, `show`, `start`, `stop`, `restart`, `reload`, `enable`,
@@ -640,7 +657,18 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   image's repository tags. Images used by a running container only show the guidance message (stop
   and delete the container first) because `-f` cannot remove them. The system tab shows `docker version` /
   `docker info` fields plus a `docker stats --no-stream` table. 403 (not in an allowed group) and
-  503 (docker unavailable) render as persistent alerts instead of toasts.
+  503 (docker unavailable) render as persistent alerts instead of toasts. The top-right toolbar
+  carries a circular `设置` gear (`Setting`, `aria-label="容器管理设置"`) **only to root**: on
+  mount the page silently calls `GET /api/docker/settings` (in parallel with the first data
+  load); success shows the button, any failure (403 for non-root, 503 on non-Linux) hides it
+  without an error toast. The click opens a 480 px `el-drawer` editing every `DockerOptions`
+  value — enable switch, docker path (empty = auto-detect), allowed groups as a
+  multi-select/creatable list, command/pull timeouts, output/log caps (edited in MiB and
+  converted to bytes) and the log tail default/max. `保存` sends `PUT /api/docker/settings`,
+  shows `设置已保存并立即生效`, and refreshes the status plus the active inner tab; saving
+  `Enabled=false` therefore surfaces the existing 503 alert immediately. The drawer copy notes
+  that settings live in the SQLite generic settings table and that the legacy `Koi:Docker`
+  section is no longer read.
 - The 服务管理 tab (`ui/src/views/ServiceView.vue`, workspace key `service`) lists systemd services
   with name, description, runtime state (ActiveState/SubState), boot enablement (UnitFileState) and
   client-side keyword/state filters; data is fetched on mount and only on the manual `刷新` button.

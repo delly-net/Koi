@@ -1,13 +1,19 @@
 namespace Koi.Api.Docker;
 
-/// <summary>Docker 容器管理配置，配置节 <c>Koi:Docker</c>。</summary>
+/// <summary>Docker 容器管理配置。</summary>
 /// <remarks>
+/// 配置不再来自 <c>appsettings.json</c>：默认值定义在代码中，运行期以 SQLite 通用配置表
+/// （Feature = <c>docker</c>，由 root 在容器管理设置抽屉中编辑）为准；数据库无记录时直接使用
+/// 这里的默认值。保存后立即生效，无需重启服务。
+/// <para>
 /// Docker 访问等同于宿主 root 权限（可挂载宿主目录），因此默认只允许 <c>docker</c> 组成员使用。
 /// 服务进程以服务账号（当前部署为 root）执行 <c>docker</c> 命令，登录用户的权限边界由组成员校验保证。
 /// 例外：uid 为 0 的账号（root）本身即宿主管理员，解析出 uid 0 后直接放行，不受 <see cref="AllowedGroups"/> 限制。
+/// </para>
 /// </remarks>
 public sealed class DockerOptions
 {
+    /// <summary>历史配置节名，仅用于语义标识；运行期不再读取该节。</summary>
     public const string SectionName = "Koi:Docker";
 
     /// <summary>是否启用容器管理接口。</summary>

@@ -47,7 +47,7 @@ public static class DockerAccessGuard
             return (Problem(
                 StatusCodes.Status503ServiceUnavailable,
                 "Docker 不可用",
-                "未找到 docker 可执行文件，请安装 Docker 或在 Koi:Docker:DockerPath 中配置路径。"), userName);
+                "未找到 docker 可执行文件，请安装 Docker 或在容器管理设置中配置 Docker 路径。"), userName);
         }
 
         if (string.IsNullOrEmpty(userName))

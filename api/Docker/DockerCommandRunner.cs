@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Docker;
 
@@ -26,7 +25,9 @@ public sealed record DockerCommandResult(
 /// 子命令白名单由 <see cref="DockerEndpoints"/> 固定，用户输入只作为经过校验的标识/引用参数。
 /// 输出按字节上限截断，超限或超时都会终止整个进程树，避免管道死锁与内存膨胀。
 /// </remarks>
-public sealed class DockerCommandRunner(IOptions<DockerOptions> options, ILogger<DockerCommandRunner> logger)
+public sealed class DockerCommandRunner(
+    DockerSettingsService settingsService,
+    ILogger<DockerCommandRunner> logger)
 {
     private static readonly string[] CandidatePaths =
     [
@@ -35,7 +36,7 @@ public sealed class DockerCommandRunner(IOptions<DockerOptions> options, ILogger
         "/bin/docker",
     ];
 
-    private DockerOptions Settings => options.Value;
+    private DockerOptions Settings => settingsService.Current;
 
     /// <summary>当前平台能否执行 docker 命令（Linux 且能找到可执行文件）。</summary>
     public static bool IsAvailable(DockerOptions settings) =>
@@ -64,7 +65,7 @@ public sealed class DockerCommandRunner(IOptions<DockerOptions> options, ILogger
             return new DockerCommandResult(
                 -1,
                 string.Empty,
-                "未找到 docker 可执行文件，请安装 Docker 或在 Koi:Docker:DockerPath 中配置路径。",
+                "未找到 docker 可执行文件，请安装 Docker 或在容器管理设置中配置 Docker 路径。",
                 TimedOut: false,
                 OutputTooLarge: false);
         }

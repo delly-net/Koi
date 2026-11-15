@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Koi.Api.Auth;
-using Microsoft.Extensions.Options;
+using Koi.Api.Terminal;
 
 namespace Koi.Api.Docker;
 
@@ -35,6 +35,10 @@ public static class DockerEndpoints
             .WithTags("Docker")
             .AddEndpointFilter<RequireSessionFilter>();
 
+        // 设置端点只校验 root，刻意跳过 Enabled 与 docker 可用性检查，便于修复配置。
+        group.MapGet("/settings", GetSettings);
+        group.MapPut("/settings", SaveSettingsAsync);
+
         group.MapGet("/status", GetStatusAsync);
         group.MapGet("/containers", ListContainersAsync);
         group.MapGet("/containers/{id}", InspectContainerAsync);
@@ -43,9 +47,9 @@ public static class DockerEndpoints
         {
             var actionName = action;
             group.MapPost($"/containers/{{id}}/{actionName}", (HttpContext context, string id,
-                    DockerCommandRunner runner, IOptions<DockerOptions> optionsAccessor,
+                    DockerCommandRunner runner, DockerSettingsService settingsService,
                     CancellationToken cancellationToken) =>
-                ContainerActionAsync(context, id, actionName, runner, optionsAccessor, cancellationToken));
+                ContainerActionAsync(context, id, actionName, runner, settingsService, cancellationToken));
         }
 
         group.MapDelete("/containers/{id}", RemoveContainerAsync);
@@ -65,10 +69,10 @@ public static class DockerEndpoints
     private static async Task<IResult> GetStatusAsync(
         HttpContext context,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -181,10 +185,10 @@ public static class DockerEndpoints
     private static async Task<IResult> ListContainersAsync(
         HttpContext context,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -208,10 +212,10 @@ public static class DockerEndpoints
         HttpContext context,
         string id,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -257,10 +261,10 @@ public static class DockerEndpoints
         string id,
         string action,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -296,10 +300,10 @@ public static class DockerEndpoints
         bool? force,
         bool? volumes,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -340,10 +344,10 @@ public static class DockerEndpoints
         int? tail,
         bool? timestamps,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -398,10 +402,10 @@ public static class DockerEndpoints
     private static async Task<IResult> GetStatsAsync(
         HttpContext context,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -432,10 +436,10 @@ public static class DockerEndpoints
     private static async Task<IResult> ListImagesAsync(
         HttpContext context,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -466,10 +470,10 @@ public static class DockerEndpoints
         HttpContext context,
         DockerPullRequest? request,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -505,10 +509,10 @@ public static class DockerEndpoints
         HttpContext context,
         DockerTagRequest? request,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -571,10 +575,10 @@ public static class DockerEndpoints
         string id,
         bool? force,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -638,10 +642,10 @@ public static class DockerEndpoints
     private static async Task<IResult> PruneImagesAsync(
         HttpContext context,
         DockerCommandRunner runner,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var (error, settings) = await GuardAsync(context, optionsAccessor, cancellationToken);
+        var (error, settings) = await GuardAsync(context, settingsService, cancellationToken);
         if (error is not null)
         {
             return error;
@@ -657,13 +661,83 @@ public static class DockerEndpoints
             : ToResult(result, "清理悬空镜像");
     }
 
+    /// <summary>
+    /// 设置端点授权：只允许 uid 0。刻意跳过 <c>Enabled</c> 与 docker 可用性检查，
+    /// 以便管理员在容器管理被关闭或配错时仍能读取并修复配置。
+    /// </summary>
+    private static (IResult? Error, string UserName) AuthorizeSettings(HttpContext context)
+    {
+        var userName = context.User.Identity?.Name ?? string.Empty;
+
+        if (!OperatingSystem.IsLinux())
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable,
+                title: "容器管理不可用",
+                detail: "容器管理依赖 Linux 上的 Docker，当前平台不支持。"), userName);
+        }
+
+        if (string.IsNullOrEmpty(userName))
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status401Unauthorized,
+                title: "未登录",
+                detail: "请先登录后再访问容器管理设置。"), userName);
+        }
+
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is not { Uid: 0 })
+        {
+            return (Results.Problem(
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "无权修改容器管理设置",
+                detail: "只有 root 账号可以修改容器管理配置。"), userName);
+        }
+
+        return (null, userName);
+    }
+
+    private static IResult GetSettings(
+        HttpContext context,
+        DockerSettingsService settingsService)
+    {
+        var (error, _) = AuthorizeSettings(context);
+        return error ?? Results.Ok(settingsService.Current);
+    }
+
+    private static async Task<IResult> SaveSettingsAsync(
+        HttpContext context,
+        DockerOptions? request,
+        DockerSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var (error, userName) = AuthorizeSettings(context);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request is null)
+        {
+            return BadRequest("请求内容为空", "请提供完整的容器管理配置。");
+        }
+
+        var settings = DockerSettingsValidator.Normalize(request);
+        if (DockerSettingsValidator.Validate(settings) is { } detail)
+        {
+            return BadRequest("配置不合法", detail);
+        }
+
+        return Results.Ok(await settingsService.SaveAsync(settings, userName, cancellationToken));
+    }
+
     /// <summary>公共前置校验：返回错误响应或当前配置。</summary>
     private static async Task<(IResult? Error, DockerOptions Settings)> GuardAsync(
         HttpContext context,
-        IOptions<DockerOptions> optionsAccessor,
+        DockerSettingsService settingsService,
         CancellationToken cancellationToken)
     {
-        var settings = optionsAccessor.Value;
+        // 每次请求读取最新快照，保证界面保存后立即生效。
+        var settings = settingsService.Current;
         var (error, _) = await DockerAccessGuard.AuthorizeAsync(context, settings, cancellationToken);
         return (error, settings);
     }

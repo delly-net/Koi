@@ -18,6 +18,20 @@ export interface DockerStatus {
   cpus: number
 }
 
+/** 容器管理设置（仅 root 可读写，保存在 SQLite 通用配置表）。 */
+export interface DockerSettings {
+  enabled: boolean
+  /** docker 可执行文件路径；空字符串表示自动探测。 */
+  dockerPath: string
+  allowedGroups: string[]
+  commandTimeoutSeconds: number
+  pullTimeoutSeconds: number
+  maxOutputBytes: number
+  maxLogBytes: number
+  logTailDefault: number
+  logTailMax: number
+}
+
 /** 容器列表项（对应 docker ps 的 JSON 输出）。 */
 export interface DockerContainer {
   id: string
@@ -210,4 +224,17 @@ export function removeImage(id: string, force = false): Promise<DockerActionResp
 
 export function pruneImages(): Promise<DockerPruneResponse> {
   return request<DockerPruneResponse>('/api/docker/images/prune', { method: 'POST' })
+}
+
+/** 读取容器管理设置；仅 root 成功，非 root 返回 403。 */
+export function getDockerSettings(): Promise<DockerSettings> {
+  return request<DockerSettings>('/api/docker/settings')
+}
+
+/** 保存容器管理设置；成功后立即生效。 */
+export function saveDockerSettings(payload: DockerSettings): Promise<DockerSettings> {
+  return request<DockerSettings>('/api/docker/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
