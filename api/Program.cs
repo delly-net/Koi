@@ -7,6 +7,7 @@ using Koi.Api.Editor;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Monitor;
+using Koi.Api.Nginx;
 using Koi.Api.Packages;
 using Koi.Api.Processes;
 using Koi.Api.Services;
@@ -77,6 +78,10 @@ builder.Services.AddSingleton<SystemctlCommandRunner>();
 // 进程管理读取 /proc 完成采集，配置同样来自 SQLite 通用配置表（FeatureConfigs）。
 builder.Services.AddSingleton<ProcessSettingsService>();
 builder.Services.AddSingleton<ProcessService>();
+// Nginx 管理配置同样来自 SQLite 通用配置表（FeatureConfigs）；配置文件由主进程直接读写。
+builder.Services.AddSingleton<NginxSettingsService>();
+builder.Services.AddSingleton<NginxCommandRunner>();
+builder.Services.AddSingleton<NginxConfigService>();
 // 应用管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FeatureConfigStore>();
 builder.Services.AddSingleton<PackageSettingsService>();
@@ -160,6 +165,9 @@ await app.Services.GetRequiredService<DockerSettingsService>().LoadAsync();
 // 进程管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Processes 节）。
 await app.Services.GetRequiredService<ProcessSettingsService>().LoadAsync();
 
+// Nginx 管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Nginx 节）。
+await app.Services.GetRequiredService<NginxSettingsService>().LoadAsync();
+
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -185,6 +193,7 @@ app.UseWebSockets(new WebSocketOptions
 app.MapGet("/api/health", (
     DockerSettingsService dockerSettings,
     ServiceSettingsService serviceSettings,
+    NginxSettingsService nginxSettings,
     PackageManagerResolver packageResolver) => Results.Ok(new
 {
     status = "ok",
@@ -196,6 +205,7 @@ app.MapGet("/api/health", (
     systemMonitorAvailable = OperatingSystem.IsLinux(),
     serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceSettings.Current),
     processAvailable = OperatingSystem.IsLinux(),
+    nginxAvailable = NginxCommandRunner.IsAvailable(nginxSettings.Current),
     packageAvailable = packageResolver.Backend is not null,
     timestamp = DateTimeOffset.UtcNow,
 }));
@@ -208,6 +218,7 @@ app.MapDockerEndpoints();
 app.MapSystemMonitorEndpoints();
 app.MapServiceEndpoints();
 app.MapProcessEndpoints();
+app.MapNginxEndpoints();
 app.MapPackageEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。

@@ -33,7 +33,10 @@ are implemented.
   apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
   filtering, background jobs for install/remove/upgrade/refresh, and software source management)
-  restricted to configured groups, Linux `/proc`-backed server status
+  restricted to configured groups, nginx-backed configuration management (conf.d `*.conf`
+  listing, UTF-8 read/write, `nginx -t` detection and `nginx -s reload` hot reload) restricted to
+  configured groups, with its settings stored in the SQLite settings table and edited by root
+  through a settings drawer, Linux `/proc`-backed server status
   (CPU/memory/disk/network) for all signed-in users, and static hosting of the built SPA from
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
@@ -41,7 +44,8 @@ are implemented.
   multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page with a
   root-only extension settings drawer, a container manager page, a systemd service manager page, a
   process manager page with a root-only settings drawer and visible-only polling, an application
-  manager page with a live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
+  manager page with a live job-log dialog, an Nginx manager page that opens conf.d files in the
+  text editor and offers detection/hot-reload actions, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -93,15 +97,18 @@ generic settings table (`Feature = files`).
   service/validator, REST endpoints),
   `Processes/` (`/proc` collector and signal sender, group authorization guard, settings
   service/validator, REST endpoints),
+  `Nginx/` (conf.d file service, nginx command runner, group authorization guard, settings
+  service/validator, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
   service, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
-  editor association/settings API, docker API, service API, process API and package API types), `src/config/`
+  editor association/settings API, docker API, service API, process API, nginx API and package API
+  types), `src/config/`
   (runtime config and the reactive text-association rules), `src/stores/` (Pinia auth, workspace
   tab and editor tab state), `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
-  service / process / package panels),
+  service / process / nginx / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
   `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
@@ -209,12 +216,13 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
-  `processAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
+  `processAvailable` / `nginxAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
-  `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET /api/system/status`,
-  and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*`, `/api/processes/*` and
-  `/api/packages/*` groups described below;
+  `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET/PUT /api/nginx/settings`,
+  `GET /api/system/status`,
+  and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*`, `/api/processes/*`,
+  `/api/nginx/*` and `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
   back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
@@ -457,6 +465,57 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `Current` per request, so nothing may cache `IOptions<ProcessOptions>`. The list response
   carries `refreshIntervalSeconds` so non-root clients can poll with the administrator's
   interval. `/api/health` exposes `processAvailable = OperatingSystem.IsLinux()`.
+- Nginx management (`api/Nginx/`, `/api/nginx/**`) reads and writes configuration files in the
+  configured `ConfDirectory` (default `/etc/nginx/conf.d`) from the main process. This is
+  deliberate: nginx configuration files are normally owned by root and the privilege-dropping
+  file helper would be unable to write them, so the security boundary is the group check plus a
+  strict file policy. Only top-level regular files whose names match
+  `^[A-Za-z0-9_][A-Za-z0-9._-]{0,254}\.conf$` are listed or editable; directories and symlinks
+  are skipped/rejected, the combined path is re-checked for containment in `ConfDirectory`, files
+  are read as strict UTF-8 (optional BOM; NUL or invalid UTF-8 → 400) and capped by
+  `MaxFileBytes` (413). Saves use the `modifiedAt` observed at read time for optimistic
+  concurrency (`expectedModifiedAt=0` forces an overwrite; a mismatch → 409) and write a
+  same-directory `.koi-nginx-*.tmp` file, copy the original Unix mode, then atomically rename it
+  over the target; the temporary name never ends in `.conf`, so a leftover file is not loaded by
+  nginx. Saving deliberately does **not** run `nginx -t`; detection and reload are separate
+  explicit actions.
+- Nginx commands run from the main process through `Process.Start` + `ArgumentList` with a fixed
+  argument set: `-t`, `-s reload`, `-v`, plus `-c <MainConfigPath>` when configured. `LANG=C` and
+  `LC_ALL=C` are set; stdout/stderr are bounded by `MaxOutputBytes`, and a timeout or output-cap
+  hit kills the process tree (504/413). The nginx executable comes from `NginxPath` or is
+  auto-detected in `/usr/sbin`, `/usr/local/nginx/sbin`, `/usr/bin`, `/usr/local/bin`, `/sbin` and
+  then `PATH`. `GET /api/nginx/status` returns `{enabled,available,version,confDirectory}`;
+  `GET /api/nginx/configs` returns `{directory,files:[{name,size,modifiedAt}],truncated}`;
+  `GET /api/nginx/configs/{name}` returns `{name,path,content,modifiedAt,size,hasBom}`;
+  `PUT /api/nginx/configs/{name}` takes `{content,expectedModifiedAt,hasBom}` and returns
+  `{ok,name,path,modifiedAt,size}`; `POST /api/nginx/test` runs `nginx -t` and
+  `POST /api/nginx/reload` runs `nginx -s reload`, both returning `{success,output}` — a non-zero
+  nginx exit is still 200 with `success=false` so the page can display the compiler output.
+  Errors: 400 invalid name/content, 403 permission or not in an allowed group, 404 missing file or
+  conf.d directory, 409 external modification, 413 too large, 503 disabled/non-Linux/nginx
+  missing, 504 timeout.
+- Nginx authorization mirrors services: every `/api/nginx/**` endpoint requires a session and
+  membership in the configured `AllowedGroups` (default `["sudo","wheel"]`), resolved with
+  `id -nG -- <user>`; uid 0 always passes even with an empty list. The check order is
+  Enabled(503) → Linux(503) → nginx available(503) → session(401) → account name(403) → root →
+  empty group list(403) → `id -nG` failure(503) → non-member(403). Editing nginx configuration is
+  equivalent to host root, so the deployment account must be trusted and the UI states this
+  explicitly. `GET/PUT /api/nginx/settings` are the exception: they only allow uid 0 (resolved
+  through `getpwnam_r`) and skip the Enabled/platform/nginx checks so a broken configuration can
+  be repaired; non-root gets 403.
+- Nginx settings are **not** read from `appsettings.json` (`Koi:Nginx` is not a runtime source):
+  the `NginxOptions` code defaults are `Enabled=true`, `NginxPath` empty (auto-detect),
+  `ConfDirectory=/etc/nginx/conf.d`, `MainConfigPath` empty (nginx compiled default),
+  `AllowedGroups=["sudo","wheel"]`, `CommandTimeoutSeconds=30`, `MaxOutputBytes=1 MiB`,
+  `MaxFileBytes=1 MiB`, `MaxListEntries=1000`. They are overridden by the SQLite generic settings
+  table (`Feature = nginx`) through `NginxSettingsService`; on first start with no `nginx` row the
+  code defaults are used directly (no legacy migration, no seed row). PUT validates paths
+  (`NginxPath`/`MainConfigPath` empty allowed; non-empty must be absolute, ≤4096 characters and
+  free of control characters; `ConfDirectory` must be absolute and non-empty), group names,
+  `CommandTimeoutSeconds` 1–3600, output/file caps 1 KiB–16 MiB and `MaxListEntries` 1–10000.
+  Saves replace the `Current` snapshot atomically and raise `Changed`; every consumer (endpoints,
+  runner, file service, health) reads `Current` per request, so nothing may cache
+  `IOptions<NginxOptions>`. `/api/health` exposes `nginxAvailable` from the same snapshot.
 - Application management (`api/Packages/`, `/api/packages/**`) runs apt, dnf, yum, pacman or
   zypper from the main process through `Process.Start` + `ArgumentList` — never a shell, never a
   fixed `sh -c` wrapper. `PackageManagerDetector` uses the `Manager` value from the settings
@@ -605,9 +664,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the eight modules mount in the sibling `.panels`
+  empty and `.el-tabs__content` is hidden; the nine modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
-  `docker` / `service` / `process` / `package`). `首页` is
+  `docker` / `service` / `process` / `nginx` / `package`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
   a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
@@ -648,7 +707,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
   persistent alert with `重试` instead of a toast. Below it the module entries are split into two
   groups driven by the `MODULE_GROUPS` array in `HomeView.vue`: **系统管理** (terminal / files /
-  editor / service / process / package) and **软件管理** (docker). Each group renders a
+  editor / service / process / package) and **软件管理** (docker / nginx). Each group renders a
   `section.module-group` with an `h2.module-group-title` (3 px primary bar + 16 px text) above its
   `.modules` grid. Each entry is a lightweight tile: a 40 px Element Plus icon above the entry
   name, no border by default and a primary-tinted highlight with a slight lift on hover/focus. The
@@ -687,8 +746,12 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - The text editor (`ui/src/views/EditorView.vue`, the `editor` workspace tab) keeps its tabs in
   `src/stores/editor.ts`, so switching workspace tabs preserves unsaved content; a browser refresh
   loses it and `beforeunload` only warns. Saves check the `modifiedAt` returned by the read, and a 409
-  lets the user overwrite (`expectedModifiedAt=0`) or reload. The editor is a plain monospace
-  textarea (no new npm dependency); large files near `MaxTextFileBytes` may feel slow. Its
+  lets the user overwrite (`expectedModifiedAt=0`) or reload. Every tab carries a unique `key`
+  (`files:<path>` or `nginx:<name>`) and a `source`; file-manager entries use `openFile()` and the
+  files API, while Nginx configs use `openNginxConfig()` and `/api/nginx/configs/{name}` through
+  `readTabContent()` / `saveTabContent()`. Nginx tabs show an `Nginx 配置` tag in the toolbar. The
+  editor is a plain monospace textarea (no new npm dependency); large files near
+  `MaxTextFileBytes` may feel slow. Its
   top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="文本编辑设置"`)
   **only to root**: on mount the page silently calls `GET /api/editor/settings`; success shows the
   button, any failure (403 for non-root, 503 on non-Linux) hides it without an error toast. The
@@ -771,6 +834,26 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   shows `设置已保存并立即生效`, and refreshes the list; saving `Enabled=false` surfaces the 503
   alert immediately. The page also carries an `自动刷新` switch that pauses polling without
   leaving the tab.
+- The Nginx 管理 tab (`ui/src/views/NginxView.vue`, workspace key `nginx`) shows the nginx
+  version plus the conf.d directory and its `*.conf` file list (name, size, modified time), loaded
+  on mount and only on the manual `刷新` button — there is no polling. Clicking a file name or the
+  row `编辑` opens it in the **existing text editor workspace tab** via
+  `editor.openNginxConfig(name, path)`; the editor store tags such tabs with `source='nginx'` and
+  reads/writes them through `/api/nginx/configs/{name}` (so sudo/wheel members can edit
+  root-owned files under the Nginx authorization). `检测配置` runs `POST /api/nginx/test` and
+  `热加载` confirms first and runs `POST /api/nginx/reload`; both open a dialog with the command's
+  `success` state and combined output. Saving a config does not trigger detection automatically.
+  403 (not in an allowed group) and 503 (nginx unavailable/disabled) render as persistent alerts
+  instead of toasts. The toolbar carries a circular `设置` gear (`Setting`,
+  `aria-label="Nginx 管理设置"`) **only to root**: on mount the page silently calls
+  `GET /api/nginx/settings` (in parallel with the first data load); success shows the button, any
+  failure (403 for non-root, 503 on non-Linux) hides it without an error toast. The click opens a
+  480 px `el-drawer` editing every `NginxOptions` value — enable switch, nginx path, conf.d
+  directory, main config path, allowed groups, command timeout, output/file caps (edited in MiB
+  and converted to bytes) and the list limit. `保存` sends `PUT /api/nginx/settings`, shows
+  `设置已保存并立即生效`, and refreshes status plus the list; saving `Enabled=false` surfaces the
+  existing 503 alert immediately. The drawer copy notes that settings live in the SQLite generic
+  settings table and that config files are read/written as the service account.
 - The 应用管理 tab (`ui/src/views/PackageView.vue`, workspace key `package`) has four inner tabs:
   已安装 / 安装 / 更新 / 软件源. It fetches the manager status on mount, loads each data tab on
   first activation, and the manual `刷新` button reloads the status plus the active tab.

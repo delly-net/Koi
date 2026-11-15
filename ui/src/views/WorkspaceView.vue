@@ -17,6 +17,7 @@ import EditorView from '@/views/EditorView.vue'
 import DockerView from '@/views/DockerView.vue'
 import ServiceView from '@/views/ServiceView.vue'
 import ProcessView from '@/views/ProcessView.vue'
+import NginxView from '@/views/NginxView.vue'
 import PackageView from '@/views/PackageView.vue'
 
 const router = useRouter()
@@ -105,6 +106,7 @@ async function handleLogout(): Promise<void> {
         v-show="activeKey === 'process'"
         :active="activeKey === 'process'"
       />
+      <NginxView v-if="hasTab('nginx')" v-show="activeKey === 'nginx'" />
       <PackageView v-if="hasTab('package')" v-show="activeKey === 'package'" />
     </div>
   </div>

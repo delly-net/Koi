@@ -10,6 +10,7 @@ export type WorkspaceTabKey =
   | 'docker'
   | 'service'
   | 'process'
+  | 'nginx'
   | 'package'
 
 /** 标签元信息；首页固定常驻，其余标签按需打开并可关闭。 */
@@ -21,6 +22,7 @@ export const WORKSPACE_TAB_TITLES: Record<WorkspaceTabKey, string> = {
   docker: '容器管理',
   service: '服务管理',
   process: '进程管理',
+  nginx: 'Nginx 管理',
   package: '应用管理',
 }
 

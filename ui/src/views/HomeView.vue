@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { Box, Cpu, EditPen, FolderOpened, Goods, Monitor, SetUp } from '@element-plus/icons-vue'
+import {
+  Box,
+  Connection,
+  Cpu,
+  EditPen,
+  FolderOpened,
+  Goods,
+  Monitor,
+  SetUp,
+} from '@element-plus/icons-vue'
 import { useWorkspaceStore, type WorkspaceTabKey } from '@/stores/workspace'
 import ServerStatus from '@/components/system/ServerStatus.vue'
 
@@ -17,7 +26,7 @@ interface HomeModule {
   icon: Component
 }
 
-/** 首页功能分类：系统管理（默认）与软件管理；容器管理归入软件管理。 */
+/** 首页功能分类：系统管理（默认）与软件管理；容器管理与 Nginx 管理归入软件管理。 */
 interface HomeModuleGroup {
   key: 'system' | 'software'
   title: string
@@ -76,6 +85,12 @@ const MODULE_GROUPS: HomeModuleGroup[] = [
         label: '容器管理',
         description: '通过 docker 命令查看与管理容器、镜像与资源占用；仅 docker 组成员可用，手动刷新数据。',
         icon: Box,
+      },
+      {
+        key: 'nginx',
+        label: 'Nginx 管理',
+        description: '查看 conf.d 配置清单并在线编辑，一键执行 nginx -t 检测与 nginx -s reload 热加载；仅管理员组可用。',
+        icon: Connection,
       },
     ],
   },

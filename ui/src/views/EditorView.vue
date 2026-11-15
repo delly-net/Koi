@@ -5,20 +5,19 @@ import { Setting } from '@element-plus/icons-vue'
 import { useEditorStore, type EditorTab } from '@/stores/editor'
 import { getEditorSettings, saveEditorSettings, type EditorSettings } from '@/api/editor'
 import { setTextExtensions } from '@/config/appConfig'
-import { readTextFile, saveTextFile } from '@/api/files'
 import { ApiError } from '@/api/http'
 
 const editor = useEditorStore()
 
 const activeTab = computed<EditorTab | null>(
-  () => editor.tabs.find((tab) => tab.path === editor.activePath) ?? null,
+  () => editor.tabs.find((tab) => tab.key === editor.activeKey) ?? null,
 )
 
-/** el-tabs 的 v-model 可能是 string | number，这里统一收敛为字符串路径。 */
+/** el-tabs 的 v-model 可能是 string | number，这里统一收敛为字符串标签键。 */
 const activeKey = computed({
-  get: () => editor.activePath,
+  get: () => editor.activeKey,
   set: (value: string | number) => {
-    editor.activePath = String(value)
+    editor.activeKey = String(value)
   },
 })
 
@@ -54,12 +53,15 @@ async function reloadTab(tab: EditorTab): Promise<void> {
   tab.loading = true
   tab.error = ''
   try {
-    const data = await readTextFile(tab.path)
+    const data = await editor.readTabContent(tab)
     tab.content = data.content
     tab.savedContent = data.content
     tab.modifiedAt = data.modifiedAt
     tab.size = data.size
     tab.hasBom = data.hasBom
+    if (data.path) {
+      tab.path = data.path
+    }
   } catch (error) {
     tab.error = errorText(error)
   } finally {
@@ -91,12 +93,7 @@ async function askConflict(): Promise<ConflictChoice> {
 /** 实际保存流程；force=true 表示用户已确认覆盖，跳过冲突检测。 */
 async function performSave(tab: EditorTab, force: boolean): Promise<void> {
   try {
-    const data = await saveTextFile(
-      tab.path,
-      tab.content,
-      force ? 0 : tab.modifiedAt,
-      tab.hasBom,
-    )
+    const data = await editor.saveTabContent(tab, force ? 0 : tab.modifiedAt)
     tab.savedContent = tab.content
     tab.modifiedAt = data.modifiedAt
     tab.size = data.size
@@ -150,8 +147,8 @@ async function requestReload(tab: EditorTab): Promise<void> {
 }
 
 async function closeTab(name: string | number): Promise<void> {
-  const path = String(name)
-  const tab = editor.tabs.find((item) => item.path === path)
+  const key = String(name)
+  const tab = editor.tabs.find((item) => item.key === key)
   if (!tab) {
     return
   }
@@ -168,7 +165,7 @@ async function closeTab(name: string | number): Promise<void> {
     }
   }
 
-  editor.closeTab(path)
+  editor.closeTab(key)
 }
 
 /** 保存快捷键：在编辑器区域按 Ctrl/Cmd+S。 */
@@ -277,6 +274,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     <div class="toolbar">
       <span class="title">文本编辑</span>
       <span v-if="activeTab" class="path" :title="activeTab.path">{{ activeTab.path }}</span>
+      <el-tag v-if="activeTab?.source === 'nginx'" type="warning" effect="plain" size="small">
+        Nginx 配置
+      </el-tag>
 
       <div class="actions">
         <el-button
@@ -315,9 +315,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
     <el-tabs v-else v-model="activeKey" type="card" class="tabs" @tab-remove="closeTab">
       <el-tab-pane
         v-for="tab in editor.tabs"
-        :key="tab.path"
+        :key="tab.key"
         :label="tabLabel(tab)"
-        :name="tab.path"
+        :name="tab.key"
         :closable="true"
       >
         <div class="pane">
