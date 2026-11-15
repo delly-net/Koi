@@ -22,7 +22,8 @@ const services = ref<ServiceSummary[]>([])
 const loading = ref(false)
 const busyName = ref('')
 const keyword = ref('')
-const stateFilter = ref<StateFilter>('all')
+// 默认只展示运行中的服务，其余状态可在下拉中切换。
+const stateFilter = ref<StateFilter>('active')
 const lastUpdated = ref('')
 
 const forbidden = ref(false)

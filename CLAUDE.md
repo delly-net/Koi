@@ -671,7 +671,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   section is no longer read.
 - The 服务管理 tab (`ui/src/views/ServiceView.vue`, workspace key `service`) lists systemd services
   with name, description, runtime state (ActiveState/SubState), boot enablement (UnitFileState) and
-  client-side keyword/state filters; data is fetched on mount and only on the manual `刷新` button.
+  client-side keyword/state filters; the state filter defaults to `运行中` (`activeState === 'active'`)
+  and can be switched to `全部状态` / `已停止` / `失败`; data is fetched on mount and only on the
+  manual `刷新` button.
   Every row operation lives in one `操作` dropdown (start / stop / restart / reload / enable
   autostart / disable autostart / logs / detail) whose items are disabled according to the current
   state. Stop, restart and disable ask for confirmation and warn that operating on the Koi service
