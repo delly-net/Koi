@@ -30,6 +30,11 @@ public static class PackageEndpoints
         group.MapGet("/search", SearchAsync);
         group.MapGet("/updates", ListUpdatesAsync);
 
+        // 已安装软件缓存：分页读取、修改简介、独立按钮触发的同步刷新。
+        group.MapGet("/cache", ListCacheAsync);
+        group.MapPut("/cache/{id:long}", UpdateCacheIntroAsync);
+        group.MapPost("/cache/refresh", RefreshCacheAsync);
+
         group.MapPost("/jobs", StartJobAsync);
         group.MapGet("/jobs/{id}", GetJobAsync);
         group.MapPost("/jobs/{id}/cancel", CancelJobAsync);
@@ -134,6 +139,136 @@ public static class PackageEndpoints
             packages.Length,
             packages.Length > take,
             packages.Take(take).ToArray()));
+    }
+
+    private static async Task<IResult> ListCacheAsync(
+        HttpContext context,
+        int? page,
+        int? pageSize,
+        string? status,
+        string? query,
+        PackageManagerResolver resolver,
+        PackageSettingsService settingsService,
+        PackageCacheService cacheService,
+        CancellationToken cancellationToken)
+    {
+        var (error, _, backend, _, _) =
+            await GuardAsync(context, settingsService, resolver, cancellationToken);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var normalizedStatus = string.IsNullOrWhiteSpace(status)
+            ? PackageCacheStatusFilters.All
+            : status.Trim().ToLowerInvariant();
+        if (!PackageCacheStatusFilters.IsValid(normalizedStatus))
+        {
+            return BadRequest(
+                "状态筛选不合法",
+                "status 只能是 all、installed 或 removed。");
+        }
+
+        var keyword = query?.Trim() ?? string.Empty;
+        if (keyword.Length > 100)
+        {
+            return BadRequest("搜索关键词不合法", "名称筛选不能超过 100 个字符。");
+        }
+
+        var currentPage = Math.Max(1, page ?? 1);
+        var size = Math.Clamp(pageSize ?? 20, 1, 100);
+        var (items, total, lastRefreshedAt) = await cacheService.QueryAsync(
+            currentPage,
+            size,
+            normalizedStatus,
+            keyword,
+            cancellationToken);
+
+        return Results.Ok(new PackageCacheListResponse(
+            backend!.Name,
+            total,
+            currentPage,
+            size,
+            normalizedStatus,
+            lastRefreshedAt,
+            items));
+    }
+
+    private static async Task<IResult> UpdateCacheIntroAsync(
+        HttpContext context,
+        long id,
+        PackageCacheIntroRequest? request,
+        PackageManagerResolver resolver,
+        PackageSettingsService settingsService,
+        PackageCacheService cacheService,
+        CancellationToken cancellationToken)
+    {
+        var (error, _, _, _, _) =
+            await GuardAsync(context, settingsService, resolver, cancellationToken);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (id <= 0)
+        {
+            return BadRequest("缓存记录不合法", "缓存记录 Id 必须为正整数。");
+        }
+
+        var intro = request?.Intro?.Trim() ?? string.Empty;
+        if (intro.Length > PackageCacheService.MaxIntroLength)
+        {
+            return BadRequest(
+                "简介过长",
+                $"简介不能超过 {PackageCacheService.MaxIntroLength} 个字符。");
+        }
+
+        var entry = await cacheService.UpdateIntroAsync(id, intro, cancellationToken);
+        return entry is null
+            ? NotFound("缓存记录不存在", "该缓存记录可能已被删除，请刷新缓存后重试。")
+            : Results.Ok(entry);
+    }
+
+    private static async Task<IResult> RefreshCacheAsync(
+        HttpContext context,
+        PackageCommandRunner runner,
+        PackageManagerResolver resolver,
+        PackageSettingsService settingsService,
+        PackageCacheService cacheService,
+        CancellationToken cancellationToken)
+    {
+        var (error, settings, backend, _, _) =
+            await GuardAsync(context, settingsService, resolver, cancellationToken);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        var command = backend!.InstalledCommand;
+        var result = await runner.RunAsync(
+            command,
+            CommandTimeout(settings),
+            MaxOutput(settings),
+            cancellationToken);
+        if (!result.IsSuccess(command))
+        {
+            return ToResult(result, "更新应用缓存");
+        }
+
+        // 同一名称可能因多架构等原因重复出现，按名称去重后写入缓存。
+        var installed = backend.ParseInstalled(result.StandardOutput)
+            .GroupBy(item => item.Name, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToArray();
+
+        var stats = await cacheService.RefreshAsync(installed, backend.Name, cancellationToken);
+        return Results.Ok(new PackageCacheRefreshResponse(
+            backend.Name,
+            stats.Total,
+            stats.Added,
+            stats.Updated,
+            stats.Removed,
+            stats.RefreshedAt));
     }
 
     private static async Task<IResult> SearchAsync(

@@ -114,7 +114,7 @@ public static class PackageManagerDetector
                     return null;
                 }
 
-                return new RpmPackageManager(name, executable);
+                return new RpmPackageManager(name, executable, Locate("rpm"));
             }
 
             case "pacman":

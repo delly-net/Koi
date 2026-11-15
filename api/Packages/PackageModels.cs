@@ -114,6 +114,54 @@ public sealed record PackageListResponse(
     bool Truncated,
     PackageSummary[] Packages);
 
+/// <summary>已安装软件缓存中的一条记录。</summary>
+/// <param name="Id">缓存记录 Id（简介编辑按此定位）。</param>
+/// <param name="Name">软件包名称。</param>
+/// <param name="Version">最近一次刷新时的版本。</param>
+/// <param name="Intro">简介，首次缓存时预填，之后只由用户修改。</param>
+/// <param name="Status">安装状态：<c>installed</c> / <c>removed</c>。</param>
+/// <param name="UpdatedAt">最近一次变更（刷新或简介编辑）时间。</param>
+public sealed record PackageCacheEntry(
+    long Id,
+    string Name,
+    string Version,
+    string Intro,
+    string Status,
+    DateTimeOffset UpdatedAt);
+
+/// <summary>缓存分页查询结果。</summary>
+public sealed record PackageCacheListResponse(
+    string Manager,
+    int Total,
+    int Page,
+    int PageSize,
+    string Status,
+    DateTimeOffset? LastRefreshedAt,
+    PackageCacheEntry[] Packages);
+
+/// <summary>缓存刷新结果。</summary>
+public sealed record PackageCacheRefreshResponse(
+    string Manager,
+    int Total,
+    int Added,
+    int Updated,
+    int Removed,
+    DateTimeOffset RefreshedAt);
+
+/// <summary>修改缓存记录简介的请求。</summary>
+public sealed record PackageCacheIntroRequest(string? Intro);
+
+/// <summary>缓存状态筛选值（与前端约定）。</summary>
+public static class PackageCacheStatusFilters
+{
+    public const string All = "all";
+    public const string Installed = "installed";
+    public const string Removed = "removed";
+
+    public static bool IsValid(string? status) =>
+        status is All or Installed or Removed;
+}
+
 public sealed record PackageSearchResponse(
     string Manager,
     PackageSearchResult[] Results,

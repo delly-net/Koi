@@ -78,6 +78,7 @@ builder.Services.AddSingleton<PackageCommandRunner>();
 builder.Services.AddSingleton<PackageManagerResolver>();
 builder.Services.AddSingleton<PackageSourceService>();
 builder.Services.AddSingleton<PackageJobManager>();
+builder.Services.AddSingleton<PackageCacheService>();
 
 // 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
 var fileOptions = builder.Configuration

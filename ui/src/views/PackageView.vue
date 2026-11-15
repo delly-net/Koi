@@ -9,21 +9,24 @@ import {
   getPackageJob,
   getPackageSettings,
   getPackageStatus,
-  listInstalled,
+  listPackageCache,
   listPackageSources,
   listUpdates,
+  refreshPackageCache,
   removePackageSource,
   savePackageSettings,
   searchPackages,
   setPackageSourceEnabled,
+  updatePackageCacheIntro,
   type PackageAction,
+  type PackageCacheEntry,
+  type PackageCacheStatusFilter,
   type PackageJob,
   type PackageJobStatus,
   type PackageSearchResult,
   type PackageSettings,
   type PackageSource,
   type PackageStatus,
-  type PackageSummary,
   type PackageUpdate,
 } from '@/api/packages'
 import { ApiError } from '@/api/http'
@@ -70,13 +73,28 @@ const forbiddenDetail = ref('')
 const unavailable = ref(false)
 const errorMessage = ref('')
 
-// ---------------- 已安装 ----------------
-const installed = ref<PackageSummary[]>([])
-const installedTotal = ref(0)
-const installedTruncated = ref(false)
-const installedLoading = ref(false)
-const installedLoaded = ref(false)
-const installedFilter = ref('')
+// ---------------- 已安装（数据库缓存） ----------------
+const cacheEntries = ref<PackageCacheEntry[]>([])
+const cacheTotal = ref(0)
+const cachePage = ref(1)
+const cachePageSize = ref(20)
+const cacheStatus = ref<PackageCacheStatusFilter>('all')
+const cacheQuery = ref('')
+const cacheLastRefreshedAt = ref<string | null>(null)
+const cacheLoading = ref(false)
+const cacheRefreshing = ref(false)
+
+const cacheStatusOptions: { label: string; value: PackageCacheStatusFilter }[] = [
+  { label: '全部', value: 'all' },
+  { label: '已安装', value: 'installed' },
+  { label: '已卸载', value: 'removed' },
+]
+
+// 简介编辑
+const introDialogVisible = ref(false)
+const introSaving = ref(false)
+const introEditing = ref<PackageCacheEntry | null>(null)
+const introDraft = ref('')
 
 // ---------------- 安装 ----------------
 const searchKeyword = ref('')
@@ -137,15 +155,6 @@ const jobRunning = computed(() => job.value?.status === 'running')
 const actionsDisabled = computed(
   () => !canModify.value || jobStarting.value || jobRunning.value,
 )
-
-const filteredInstalled = computed(() => {
-  const keyword = installedFilter.value.trim().toLowerCase()
-  if (!keyword) {
-    return installed.value
-  }
-
-  return installed.value.filter((item) => item.name.toLowerCase().includes(keyword))
-})
 
 const jobDialogTitle = computed(() =>
   jobTitle.value ? `执行日志：${jobTitle.value}` : '执行日志',
@@ -274,23 +283,118 @@ async function saveSettings(): Promise<void> {
   }
 }
 
-async function loadInstalled(force = false): Promise<void> {
-  if (installedLoaded.value && !force) {
+function formatCacheTime(value: string | null): string {
+  if (!value) {
+    return ''
+  }
+
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+}
+
+/** 从数据库缓存分页读取已安装应用；筛选与分页均由服务端完成。 */
+let cacheRequestId = 0
+
+async function loadCache(retryOnOverflow = true): Promise<void> {
+  const requestId = ++cacheRequestId
+  cacheLoading.value = true
+  try {
+    const response = await listPackageCache({
+      page: cachePage.value,
+      pageSize: cachePageSize.value,
+      status: cacheStatus.value,
+      query: cacheQuery.value,
+    })
+
+    // 分页/筛选快速切换时，只采纳最后一次请求的结果。
+    if (requestId !== cacheRequestId) {
+      return
+    }
+
+    cacheLastRefreshedAt.value = response.lastRefreshedAt
+
+    // 筛选或刷新后总页数变少时回退到最后一页，避免停留在空页。
+    if (response.total === 0 && cachePage.value !== 1) {
+      cachePage.value = 1
+    }
+
+    const lastPage = Math.max(1, Math.ceil(response.total / response.pageSize))
+    if (retryOnOverflow && response.total > 0 && response.packages.length === 0 &&
+        cachePage.value > lastPage) {
+      cachePage.value = lastPage
+      await loadCache(false)
+      return
+    }
+
+    cacheEntries.value = response.packages
+    cacheTotal.value = response.total
+    markAvailable()
+  } catch (error) {
+    if (requestId === cacheRequestId) {
+      handleLoadError(error, '加载已安装应用缓存失败')
+    }
+  } finally {
+    if (requestId === cacheRequestId) {
+      cacheLoading.value = false
+    }
+  }
+}
+
+/** 独立按钮：同步查询包管理器并更新数据库缓存，简介字段不会被覆盖。 */
+async function triggerCacheRefresh(): Promise<void> {
+  cacheRefreshing.value = true
+  try {
+    const result = await refreshPackageCache()
+    ElMessage.success(
+      `缓存已更新：共 ${result.total} 个应用（新增 ${result.added}，更新 ${result.updated}，` +
+        `标记已卸载 ${result.removed}）`,
+    )
+    markAvailable()
+    await loadCache()
+  } catch (error) {
+    handleLoadError(error, '更新应用缓存失败')
+  } finally {
+    cacheRefreshing.value = false
+  }
+}
+
+function onCachePageChange(page: number): void {
+  cachePage.value = page
+  void loadCache()
+}
+
+function onCachePageSizeChange(size: number): void {
+  cachePageSize.value = size
+  cachePage.value = 1
+  void loadCache()
+}
+
+function editIntro(item: PackageCacheEntry): void {
+  introEditing.value = item
+  introDraft.value = item.intro
+  introDialogVisible.value = true
+}
+
+async function saveIntro(): Promise<void> {
+  const item = introEditing.value
+  if (!item) {
     return
   }
 
-  installedLoading.value = true
+  introSaving.value = true
   try {
-    const response = await listInstalled()
-    installed.value = response.packages
-    installedTotal.value = response.total
-    installedTruncated.value = response.truncated
-    installedLoaded.value = true
-    markAvailable()
+    const updated = await updatePackageCacheIntro(item.id, introDraft.value)
+    const index = cacheEntries.value.findIndex((entry) => entry.id === updated.id)
+    if (index >= 0) {
+      cacheEntries.value[index] = updated
+    }
+
+    introDialogVisible.value = false
+    ElMessage.success('简介已保存')
   } catch (error) {
-    handleLoadError(error, '加载已安装列表失败')
+    showError(error)
   } finally {
-    installedLoading.value = false
+    introSaving.value = false
   }
 }
 
@@ -339,7 +443,7 @@ async function loadActiveTab(force = false): Promise<void> {
 
   switch (activeTab.value) {
     case 'installed':
-      await loadInstalled(force)
+      await loadCache()
       return
     case 'updates':
       await loadUpdates(force)
@@ -469,7 +573,6 @@ function onJobFinished(snapshot: PackageJob): void {
     ElMessage.error(`${jobTitle.value}失败，请查看执行日志`)
   }
 
-  installedLoaded.value = false
   updatesLoaded.value = false
   sourcesLoaded.value = false
   void loadActiveTab(true)
@@ -537,7 +640,7 @@ async function confirmAndRun(
   await startJob(action, packages, title)
 }
 
-async function uninstall(item: PackageSummary): Promise<void> {
+async function uninstall(item: PackageCacheEntry): Promise<void> {
   await confirmAndRun(
     'remove',
     [item.name],
@@ -785,12 +888,28 @@ watch(activeTab, () => {
   void loadActiveTab(false)
 })
 
+// 状态筛选立即生效；名称筛选做 300ms 防抖，避免每次按键都请求。
+watch(cacheStatus, () => {
+  cachePage.value = 1
+  void loadCache()
+})
+
+let cacheFilterTimer: number | undefined
+watch(cacheQuery, () => {
+  window.clearTimeout(cacheFilterTimer)
+  cacheFilterTimer = window.setTimeout(() => {
+    cachePage.value = 1
+    void loadCache()
+  }, 300)
+})
+
 onMounted(async () => {
   await Promise.all([loadStatus(), loadSettingsAvailability()])
   await loadActiveTab(false)
 })
 
 onBeforeUnmount(() => {
+  window.clearTimeout(cacheFilterTimer)
   stopJobPolling()
 })
 </script>
@@ -875,36 +994,77 @@ onBeforeUnmount(() => {
       <el-tab-pane label="已安装" name="installed">
         <div class="pane">
           <div class="pane-toolbar">
+            <el-select
+              v-model="cacheStatus"
+              class="status-select"
+              aria-label="按安装状态筛选"
+            >
+              <el-option
+                v-for="option in cacheStatusOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
             <el-input
-              v-model="installedFilter"
+              v-model="cacheQuery"
               class="filter-input"
-              placeholder="按名称过滤已安装应用"
+              placeholder="按名称筛选缓存中的应用"
               clearable
             />
+            <el-button
+              type="primary"
+              :icon="Refresh"
+              :loading="cacheRefreshing"
+              @click="triggerCacheRefresh"
+            >
+              更新缓存
+            </el-button>
             <span class="hint">
-              共 {{ filteredInstalled.length }} / {{ installed.length }} 个已安装应用（总计
-              {{ installedTotal }}）
-              <template v-if="installedTruncated">，列表已截断</template>
+              共 {{ cacheTotal }} 条记录
+              <template v-if="cacheLastRefreshedAt">
+                ，缓存更新于 {{ formatCacheTime(cacheLastRefreshedAt) }}
+              </template>
+              <template v-else>，缓存尚未更新</template>
+              简介不会被更新缓存覆盖
             </span>
           </div>
           <div class="table-wrap">
             <el-table
-              v-loading="installedLoading"
-              :data="filteredInstalled"
+              v-loading="cacheLoading"
+              :data="cacheEntries"
               height="100%"
               border
               stripe
-              empty-text="没有匹配的已安装应用"
+              empty-text="缓存为空，请点击「更新缓存」从系统读取已安装应用"
             >
-              <el-table-column prop="name" label="名称" min-width="240" show-overflow-tooltip />
-              <el-table-column prop="version" label="版本" width="240" show-overflow-tooltip />
-              <el-table-column label="操作" width="120" fixed="right" align="center">
+              <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip />
+              <el-table-column prop="version" label="版本" width="200" show-overflow-tooltip />
+              <el-table-column prop="intro" label="简介" min-width="260" show-overflow-tooltip>
                 <template #default="{ row }">
+                  <span v-if="row.intro">{{ row.intro }}</span>
+                  <span v-else class="muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="100" align="center">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="row.status === 'installed' ? 'success' : 'info'"
+                    size="small"
+                    effect="plain"
+                  >
+                    {{ row.status === 'installed' ? '已安装' : '已卸载' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="190" fixed="right" align="center">
+                <template #default="{ row }">
+                  <el-button size="small" plain @click="editIntro(row)">编辑简介</el-button>
                   <el-button
                     size="small"
                     type="danger"
                     plain
-                    :disabled="actionsDisabled"
+                    :disabled="row.status !== 'installed' || actionsDisabled"
                     @click="uninstall(row)"
                   >
                     卸载
@@ -913,6 +1073,17 @@ onBeforeUnmount(() => {
               </el-table-column>
             </el-table>
           </div>
+          <el-pagination
+            v-model:current-page="cachePage"
+            v-model:page-size="cachePageSize"
+            class="pager"
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="cacheTotal"
+            :page-sizes="[20, 50, 100]"
+            @current-change="onCachePageChange"
+            @size-change="onCachePageSizeChange"
+          />
         </div>
       </el-tab-pane>
 
@@ -1185,6 +1356,25 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="introDialogVisible"
+      :title="introEditing ? `编辑简介：${introEditing.name}` : '编辑简介'"
+      width="520px"
+    >
+      <el-input
+        v-model="introDraft"
+        type="textarea"
+        :rows="5"
+        maxlength="500"
+        show-word-limit
+        placeholder="填写该应用的用途、注意事项等；更新缓存不会覆盖这里的内容。"
+      />
+      <template #footer>
+        <el-button @click="introDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="introSaving" @click="saveIntro">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer
       v-model="settingsVisible"
       title="应用管理设置"
@@ -1406,6 +1596,20 @@ onBeforeUnmount(() => {
 
 .filter-input {
   width: 320px;
+}
+
+.status-select {
+  width: 130px;
+}
+
+.pager {
+  flex: none;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.muted {
+  color: #c0c4cc;
 }
 
 .search-input {

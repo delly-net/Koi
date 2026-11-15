@@ -9,6 +9,8 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
 
     public DbSet<FeatureConfigEntity> FeatureConfigs => Set<FeatureConfigEntity>();
 
+    public DbSet<PackageCacheEntity> PackageCacheItems => Set<PackageCacheEntity>();
+
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
         base.ConfigureConventions(configurationBuilder);
@@ -35,6 +37,14 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
             entity.ToTable("FeatureConfigs");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.Feature).IsUnique();
+        });
+
+        // 已安装软件缓存：名称唯一，刷新时按名称 Upsert。
+        modelBuilder.Entity<PackageCacheEntity>(entity =>
+        {
+            entity.ToTable("PackageCacheItems");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Name).IsUnique();
         });
     }
 }

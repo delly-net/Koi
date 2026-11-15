@@ -9,7 +9,8 @@ namespace Koi.Api.Packages;
 /// </remarks>
 public sealed partial class RpmPackageManager(
     string managerName,
-    string executablePath) : PackageManagerBackend
+    string executablePath,
+    string? rpmPath = null) : PackageManagerBackend
 {
     [GeneratedRegex(@"\.(x86_64|i[3-6]86|noarch|aarch64|armv7hl|armv6hl|ppc64le|ppc64|s390x|riscv64)$", RegexOptions.Compiled)]
     private static partial Regex ArchSuffixRegex();
@@ -24,8 +25,11 @@ public sealed partial class RpmPackageManager(
 
     public override PackageCommand VersionCommand => PackageCommand.Of(executablePath, "--version");
 
+    // 有 rpm 可执行文件时直接查询名称/版本/简介（用于缓存预填），否则退回 dnf/yum 列表（无简介）。
     public override PackageCommand InstalledCommand =>
-        PackageCommand.Of(executablePath, "-q", "list", "installed");
+        rpmPath is null
+            ? PackageCommand.Of(executablePath, "-q", "list", "installed")
+            : PackageCommand.Of(rpmPath, "-qa", "--qf", "%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{SUMMARY}\\n");
 
     public override PackageCommand SearchCommand(string query) =>
         PackageCommand.Of(executablePath, "-q", "search", query);
@@ -80,6 +84,23 @@ public sealed partial class RpmPackageManager(
                 trimmed.StartsWith("Available Packages", StringComparison.Ordinal) ||
                 trimmed.StartsWith("Last metadata expiration", StringComparison.Ordinal))
             {
+                continue;
+            }
+
+            // rpm -qa --qf 输出为制表符分隔的“名称 \t 版本 \t 简介”，dnf/yum 列表为空白分隔。
+            if (trimmed.Contains('\t'))
+            {
+                var columns = trimmed.Split('\t');
+                var rpmName = columns[0].Trim();
+                if (rpmName.Length == 0)
+                {
+                    continue;
+                }
+
+                packages.Add(new PackageSummary(
+                    rpmName,
+                    columns.Length > 1 ? columns[1].Trim() : string.Empty,
+                    columns.Length > 2 ? columns[2].Trim() : string.Empty));
                 continue;
             }
 

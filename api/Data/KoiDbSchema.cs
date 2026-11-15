@@ -30,5 +30,25 @@ public static class KoiDbSchema
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_FeatureConfigs_Feature"
             ON "FeatureConfigs" ("Feature");
             """);
+
+        // 已安装软件缓存；时间列由 UtcTicksConverter 存为 INTEGER（UTC ticks）。
+        db.Database.ExecuteSqlRaw("""
+            CREATE TABLE IF NOT EXISTS "PackageCacheItems" (
+                "Id" INTEGER NOT NULL CONSTRAINT "PK_PackageCacheItems" PRIMARY KEY AUTOINCREMENT,
+                "Name" TEXT NOT NULL,
+                "Version" TEXT NOT NULL,
+                "Intro" TEXT NOT NULL,
+                "Status" TEXT NOT NULL,
+                "Manager" TEXT NOT NULL,
+                "CreatedAt" INTEGER NOT NULL,
+                "UpdatedAt" INTEGER NOT NULL,
+                "RefreshedAt" INTEGER NOT NULL
+            );
+            """);
+
+        db.Database.ExecuteSqlRaw("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_PackageCacheItems_Name"
+            ON "PackageCacheItems" ("Name");
+            """);
     }
 }

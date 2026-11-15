@@ -23,8 +23,9 @@ are implemented.
   read/write over REST, docker-CLI-backed container/image management restricted to configured
   groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, apt/dnf/yum/pacman/zypper-backed application management
-  (installed/search/updates, background jobs for install/remove/upgrade/refresh, and software
-  source management) restricted to configured groups, Linux `/proc`-backed server status
+  (installed/search/updates, a SQLite installed-application cache with paginated status
+  filtering, background jobs for install/remove/upgrade/refresh, and software source management)
+  restricted to configured groups, Linux `/proc`-backed server status
   (CPU/memory/disk/network) for all signed-in users, and static hosting of the built SPA from
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
@@ -321,6 +322,23 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   local-index results; `GET /updates` lists upgradable packages (dnf/yum cannot report the
   current version, so it is empty). A missing manager, non-Linux host or `Enabled=false` returns
   503 ProblemDetails.
+- Installed applications are cached in SQLite (`PackageCacheItems`, `api/Data/PackageCacheEntity.cs`):
+  `Id`, `Name` (unique), `Version`, `Intro`, `Status` (`installed`/`removed`), `Manager`,
+  `CreatedAt`, `UpdatedAt`, `RefreshedAt`. `GET /api/packages/cache?page=&pageSize=&status=&query=`
+  reads the cache with server-side paging (`page` >= 1, `pageSize` clamped 1..100, default 20),
+  `status` one of `all`/`installed`/`removed`, optional name filter (SQLite `LIKE`), returning
+  `{manager,total,page,pageSize,status,lastRefreshedAt,packages:[{id,name,version,intro,status,updatedAt}]}`.
+  `PUT /api/packages/cache/{id}` `{intro}` edits the intro (trimmed, max 500 characters; 404 for a
+  missing record, 400 for an invalid id/body). `POST /api/packages/cache/refresh` synchronously runs
+  the backend's `InstalledCommand` (bounded by `CommandTimeoutSeconds`/`MaxOutputBytes`) and upserts:
+  new rows get `Intro` from the package-manager description (`dpkg-query ${binary:Summary}`,
+  `rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}\t%{SUMMARY}\n'`, zypper XML; pacman `-Q` carries no
+  description so its intro starts empty), existing rows update only version/status/manager/timestamps
+  and **never overwrite `Intro`**, and rows absent from the system become `removed` (records are kept
+  and flip back to `installed` when the package reappears). It returns
+  `{manager,total,added,updated,removed,refreshedAt}`. Refreshes are serialized with a semaphore;
+  cache reads, refreshes and intro edits use the normal package authorization (no service-root
+  requirement). `GET /installed` remains available for live, uncached queries.
 - Package mutations are in-memory background jobs (`PackageJobManager`): `POST /api/packages/jobs`
   with `{action, packages}` where action is `install`, `remove`, `upgrade`, `upgrade-all` or
   `refresh`, returns 202 `{jobId, action, packages}`. Only one job may run at a time (otherwise
@@ -410,8 +428,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers. Since
   `EnsureCreated` does not add tables to an existing database, `KoiDbSchema.EnsureCompatibilityTables`
   runs idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS` for the
-  generic settings table after `EnsureCreated`; keep its DDL in sync with the EF model (or replace
-  it with EF migrations).
+  generic settings table and the `PackageCacheItems` installed-app cache after `EnsureCreated`;
+  keep its DDL in sync with the EF model (or replace it with EF migrations).
 - Generic feature settings live in `FeatureConfigs` (`api/Data/FeatureConfigEntity.cs`):
   `Id`, `Feature` (unique, e.g. `packages`), `ConfigJson`, `UpdatedAt`, `UpdatedBy`. Each
   feature owns one JSON row, so future modules can reuse the table and `FeatureConfigStore`
@@ -527,7 +545,14 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - The 应用管理 tab (`ui/src/views/PackageView.vue`, workspace key `package`) has four inner tabs:
   已安装 / 安装 / 更新 / 软件源. It fetches the manager status on mount, loads each data tab on
   first activation, and the manual `刷新` button reloads the status plus the active tab.
-  已安装 offers a client-side name filter and a per-row `卸载`; 安装 offers keyword search plus a
+  已安装 reads the database cache with server-side paging (`el-pagination`, page sizes
+  20/50/100), a status filter (全部 / 已安装 / 已卸载) and a debounced name filter; the toolbar
+  `更新缓存` button calls `POST /api/packages/cache/refresh` synchronously and reports
+  added/updated/removed counts. Each row shows name, version, intro and a status tag; `编辑简介`
+  opens a 500-character textarea dialog saved through `PUT /api/packages/cache/{id}`, and `卸载` is
+  enabled only for `installed` rows (also subject to the service-root rule). An empty cache shows
+  guidance to press `更新缓存`; the page never rebuilds the cache implicitly, and passing an
+  install/remove job only reloads the current cache page. 安装 offers keyword search plus a
   direct exact-name install input, with per-row `安装`; 更新 shows current/new versions (current
   version may be `—` for dnf/yum), a `系统更新` button for all upgrades and a per-row `升级`.
   软件源 lists name, URI, apt suite/components, enabled state, backing file and a Koi-created tag,

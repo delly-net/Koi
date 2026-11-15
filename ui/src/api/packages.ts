@@ -27,6 +27,49 @@ export interface PackageListResponse {
   packages: PackageSummary[]
 }
 
+/** 缓存记录的安装状态。 */
+export type PackageCacheStatus = 'installed' | 'removed'
+
+/** 已安装软件缓存中的一条记录。 */
+export interface PackageCacheEntry {
+  id: number
+  name: string
+  version: string
+  /** 简介：首次缓存时预填包管理器描述，之后只由用户修改。 */
+  intro: string
+  status: PackageCacheStatus
+  updatedAt: string
+}
+
+/** 缓存分页查询条件；status 为 all / installed / removed。 */
+export type PackageCacheStatusFilter = 'all' | PackageCacheStatus
+
+export interface PackageCacheListParams {
+  page?: number
+  pageSize?: number
+  status?: PackageCacheStatusFilter
+  query?: string
+}
+
+export interface PackageCacheListResponse {
+  manager: string
+  total: number
+  page: number
+  pageSize: number
+  status: PackageCacheStatusFilter
+  lastRefreshedAt: string | null
+  packages: PackageCacheEntry[]
+}
+
+export interface PackageCacheRefreshResponse {
+  manager: string
+  total: number
+  added: number
+  updated: number
+  removed: number
+  refreshedAt: string
+}
+
 export interface PackageSearchResult {
   name: string
   version: string
@@ -159,6 +202,46 @@ export function listInstalled(query = '', limit?: number): Promise<PackageListRe
 
   const suffix = params.toString()
   return request<PackageListResponse>(`/api/packages/installed${suffix ? `?${suffix}` : ''}`)
+}
+
+/** 分页读取已安装软件缓存（数据来自数据库，不触发包管理器查询）。 */
+export function listPackageCache(
+  params: PackageCacheListParams = {},
+): Promise<PackageCacheListResponse> {
+  const search = new URLSearchParams()
+  if (params.page !== undefined) {
+    search.set('page', String(params.page))
+  }
+  if (params.pageSize !== undefined) {
+    search.set('pageSize', String(params.pageSize))
+  }
+  if (params.status !== undefined) {
+    search.set('status', params.status)
+  }
+  if (params.query && params.query.trim().length > 0) {
+    search.set('query', params.query.trim())
+  }
+
+  const suffix = search.toString()
+  return request<PackageCacheListResponse>(`/api/packages/cache${suffix ? `?${suffix}` : ''}`)
+}
+
+/** 修改缓存记录的简介；刷新缓存不会覆盖该值。 */
+export function updatePackageCacheIntro(
+  id: number,
+  intro: string,
+): Promise<PackageCacheEntry> {
+  return request<PackageCacheEntry>(`/api/packages/cache/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ intro }),
+  })
+}
+
+/** 更新缓存：同步查询包管理器并把结果写入数据库。 */
+export function refreshPackageCache(): Promise<PackageCacheRefreshResponse> {
+  return request<PackageCacheRefreshResponse>('/api/packages/cache/refresh', {
+    method: 'POST',
+  })
 }
 
 export function searchPackages(query: string): Promise<PackageSearchResponse> {

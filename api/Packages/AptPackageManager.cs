@@ -35,8 +35,9 @@ public sealed partial class AptPackageManager(
 
     public override PackageCommand VersionCommand => PackageCommand.Of(aptGetPath, "--version");
 
+    // 第 4 列为二进制包的一行简介（binary:Summary），用于缓存记录的简介预填。
     public override PackageCommand InstalledCommand =>
-        new(dpkgQueryPath, ["-W", "-f=${Package}\\t${Version}\\t${Status}\\n"]);
+        new(dpkgQueryPath, ["-W", "-f=${Package}\\t${Version}\\t${Status}\\t${binary:Summary}\\n"]);
 
     public override PackageCommand SearchCommand(string query) =>
         PackageCommand.Of(aptCachePath, "search", "--names-only", query);
@@ -111,7 +112,9 @@ public sealed partial class AptPackageManager(
                 continue;
             }
 
-            packages.Add(new PackageSummary(name, parts[1].Trim(), string.Empty));
+            // 旧版 dpkg-query 可能没有第 4 列，允许简介为空。
+            var summary = parts.Length >= 4 ? parts[3].Trim() : string.Empty;
+            packages.Add(new PackageSummary(name, parts[1].Trim(), summary));
         }
 
         return packages;
