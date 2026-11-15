@@ -371,12 +371,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `v-loading`, so the previous snapshot stays visible and is replaced when the new one arrives;
   only the first load (no data yet) shows `el-skeleton`, and the `重试` button keeps its own
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
-  persistent alert with `重试` instead of a toast. Below it are the five module cards (terminal /
-  files / editor / docker / service) whose entry buttons share one style: all `type="primary"`,
-  full width of the card body, and pinned to the card bottom (`p { flex: 1 }` plus a column flex
-  body) so the five buttons sit on the same horizontal line even though the descriptions differ in
-  length. Keep new home cards on the same pattern; `.modules` uses a 1400 px max width so all five
-  fit on one row on wide screens.
+  persistent alert with `重试` instead of a toast. Below it are the five module entries (terminal /
+  files / editor / docker / service) driven by the `MODULES` array in `HomeView.vue`, each rendered
+  as a lightweight tile: a 40 px Element Plus icon above the entry name, no border by default and a
+  primary-tinted highlight with a slight lift on hover/focus. The whole tile is the button
+  (`role="button"`, `tabindex="0"`, `@click` plus `Enter` / `Space`) and calls
+  `workspace.open(key)`; the description is no longer shown inline — it appears only as an
+  `el-tooltip` on the icon. Element Plus teleports the tooltip to `body`, so its class is styled
+  via `:global(.module-tip)` (`max-width: 260px`). `.modules` uses a 1100 px max width (aligned
+  with the status panel) and `repeat(auto-fit, minmax(160px, 1fr))`, so tiles wrap on narrow
+  screens. Keep new home entries on the same pattern: add label, description and icon to `MODULES`.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
   empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
   or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
