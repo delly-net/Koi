@@ -13,16 +13,22 @@ import {
   type ProcessSummary,
 } from '@/api/processes'
 import { ApiError } from '@/api/http'
+import { useAuthStore } from '@/stores/auth'
 
 /** active 由工作区传入：仅进程管理标签可见时才自动刷新进程列表。 */
 const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
+
+const auth = useAuthStore()
+/** 当前登录账号：用户筛选的默认值（与 /proc 中 getpwuid_r 解析出的用户名一致）。 */
+const currentUserName = computed(() => auth.user?.userName ?? '')
 
 const processes = ref<ProcessSummary[]>([])
 const total = ref(0)
 const truncated = ref(false)
 const loading = ref(false)
 const keyword = ref('')
-const userFilter = ref('all')
+/** 默认按当前登录用户筛选；可在下拉中切换「全部用户」或其他用户。 */
+const userFilter = ref(currentUserName.value || 'all')
 const lastUpdated = ref('')
 const refreshIntervalSeconds = ref(5)
 
@@ -70,6 +76,11 @@ const filteredProcesses = computed(() => {
 
 const userOptions = computed(() => {
   const users = new Set(processes.value.map((process) => process.user))
+  // 当前账号暂无可见进程时也要保留选项，否则下拉会显示原始值而不是用户名。
+  if (currentUserName.value) {
+    users.add(currentUserName.value)
+  }
+
   return Array.from(users).sort((left, right) => left.localeCompare(right))
 })
 
@@ -525,7 +536,8 @@ onUnmounted(() => {
         <el-option v-for="user in userOptions" :key="user" :label="user" :value="user" />
       </el-select>
       <span class="hint">
-        共 {{ filteredProcesses.length }} / {{ total }} 个进程（按 CPU 降序{{
+        {{ userFilter === 'all' ? '全部用户' : `用户 ${userFilter}` }}；共
+        {{ filteredProcesses.length }} / {{ total }} 个进程（默认按 CPU 降序{{
           truncated ? '，已按最大进程数截断' : ''
         }}）
       </span>
@@ -543,7 +555,7 @@ onUnmounted(() => {
       >
         <el-table-column prop="pid" label="PID" width="90" sortable />
         <el-table-column prop="user" label="用户" width="120" show-overflow-tooltip />
-        <el-table-column label="进程名" width="180">
+        <el-table-column prop="name" label="进程名" width="180" sortable>
           <template #default="{ row }">
             <span class="process-name" @click="openDetail(row)">{{ row.name }}</span>
           </template>

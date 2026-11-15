@@ -740,8 +740,13 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - The 进程管理 tab (`ui/src/views/ProcessView.vue`, workspace key `process`) lists processes from
   `GET /api/processes` with PID, user, name, command line, state (mapped to Chinese labels),
   CPU%, memory%, RSS, threads and runtime; a keyword filter matches PID / name / user / command
-  line and a user filter narrows the list. Table columns for PID, CPU%, memory%, RSS, threads and
-  runtime are locally sortable. Data refreshes automatically every `refreshIntervalSeconds` (from
+  line and a user filter narrows the list. The user filter defaults to the signed-in account (the
+  account name from `GET /api/auth/me`, matching the `getpwuid_r` user of the process rows) and can
+  be switched to `全部用户` or another user; the filter line shows the active scope. Table columns
+  for PID, name, CPU%, memory%, RSS, threads and runtime are locally sortable; the table still
+  starts with the server snapshot's CPU-descending order (`:default-sort`), and sorting/filtering
+  only reorders the already-truncated snapshot without changing `total` / `truncated`. Data
+  refreshes automatically every `refreshIntervalSeconds` (from
   the list response, default 5 s) **only** while the tab is active (`:active` from the workspace)
   and `document.visibilityState === 'visible'`; tab switches and `visibilitychange` restart or
   stop the interval, the timer and listener are cleaned up on unmount, automatic refreshes are
