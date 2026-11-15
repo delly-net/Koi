@@ -49,11 +49,16 @@ are implemented.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
-(open / edit / download / rename / copy / cut / delete) into a single `操作` dropdown per row, so
-the action column stays narrow. Directories are opened by clicking the entry name or choosing
-`打开`; files listed in the configured text associations are opened in the text editor by clicking
-the name or choosing `打开` / `编辑文本`; other files are downloaded via `下载` (double-click no
-longer opens entries).
+(open / open in new tab / open terminal / edit / download / rename / copy / cut / delete) into a
+single `操作` dropdown per row, so the action column stays narrow. Directories are opened by
+clicking the entry name or choosing `打开`; files listed in the configured text associations are
+opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; other files are
+downloaded via `下载` (double-click no longer opens entries). A directory row offers `打开终端`,
+and the path bar has an `打开终端` button (`Monitor` icon) for the current directory: both ask the
+terminal store (`ui/src/stores/terminal.ts`) for a new terminal tab with the directory as its
+working directory, then switch to the workspace `终端` tab. The terminal page consumes the request
+either in its `setup` (when the panel is mounted on demand) or through a watcher (when it is
+already open), so the request is never lost and each click creates a new tab.
 
 Inside the single `文件管理` workspace tab the file manager is itself tabbed: every inner tab
 (`FileBrowserPane` in `ui/src/components/files/`) browses an independent directory and keeps its own
@@ -106,7 +111,7 @@ generic settings table (`Feature = files`).
   editor association/settings API, docker API, service API, process API, nginx API and package API
   types), `src/config/`
   (runtime config and the reactive text-association rules), `src/stores/` (Pinia auth, workspace
-  tab and editor tab state), `src/router/`,
+  tab, editor tab, file clipboard and terminal-tab request state), `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
   service / process / nginx / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
@@ -178,14 +183,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   - the main process allocates the PTY master with `posix_openpt` + `grantpt` + `unlockpt` +
     `ptsname_r`, marks the master `FD_CLOEXEC`, and sets the initial `TIOCSWINSZ`;
   - it then re-launches *this same binary* with the hidden first argument `--koi-pty-helper`
-    (`PtyHelper.ArgumentName`), passing slave path, uid, gid, user name, home and the shell
-    command line. `Program.cs` diverts on that argument before `WebApplication.CreateBuilder`, so
-    the helper never starts Kestrel;
+    (`PtyHelper.ArgumentName`), passing slave path, uid, gid, user name, home, the requested
+    working directory (empty = home) and the shell command line. `Program.cs` diverts on that
+    argument before `WebApplication.CreateBuilder`, so the helper never starts Kestrel;
   - the helper (a normal, unforked .NET process) opens the slave, `setsid`, `TIOCSCTTY`, drops
     privileges (`initgroups` → `setgid` → `setuid`, `initgroups` strictly before `setuid`),
-    `chdir`s home, checks `access(shell, X_OK)`, writes one readiness byte (`PtyHelper.ReadyByte`)
-    to the redirected stdout, `dup2`s the slave onto fds 0/1/2, restores `SIGPIPE` and the signal
-    mask, then `execve`s the shell with a clean environment;
+    `chdir`s the requested working directory when non-empty (falling back to home when the
+    directory is empty or inaccessible after the privilege drop), checks `access(shell, X_OK)`,
+    writes one readiness byte (`PtyHelper.ReadyByte`) to the redirected stdout, `dup2`s the slave
+    onto fds 0/1/2, restores `SIGPIPE` and the signal mask, then `execve`s the shell with a clean
+    environment;
   - the parent waits up to 5 s for the readiness byte. No byte means failure: the helper exits
     with a documented code (`PtyHelper.*FailedExitCode`: 111 setgid, 112 initgroups, 113 setuid,
     120 slave open, 121 setsid, 122 dup2, 127 exec) which is mapped to a Chinese message.
@@ -217,7 +224,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `processAvailable` / `nginxAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
-  `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
+  `GET /api/terminal/ws[?cwd=]`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
   `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET/PUT /api/nginx/settings`,
   `GET /api/system/status`,
@@ -225,12 +232,18 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `/api/nginx/*` and `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
   back to the SPA.
-- Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
-  `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
-  sends `ready` (sessionId/userName/pid/cols/rows), `output` (UTF-8 decoded text), `exit` (code),
-  `error` (message) and `pong`. Authentication is the session cookie (401); the handshake is then
-  Origin-checked explicitly (403) because it is a GET and therefore bypasses
-  `SameOriginMiddleware`; non-Linux or disabled returns 503.
+- Terminal protocol (`GET /api/terminal/ws[?cwd=<absolute path>]`, WebSocket JSON text frames,
+  camelCase): client sends `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`,
+  `{"type":"ping"}`; the server sends `ready` (sessionId/userName/pid/cols/rows), `output` (UTF-8
+  decoded text), `exit` (code), `error` (message) and `pong`. Authentication is the session cookie
+  (401); the handshake is then Origin-checked explicitly (403) because it is a GET and therefore
+  bypasses `SameOriginMiddleware`; non-Linux or disabled returns 503. The optional `cwd` query
+  parameter sets the shell's initial working directory (used by the file manager's `打开终端`);
+  it must be an absolute path of at most 4096 characters without control characters, and is
+  normalized with `Path.GetFullPath`; a missing or non-directory target returns 400 ProblemDetails
+  and no PTY is started. The main process validates as root, which only proves existence — the
+  real access boundary is still the dropped user's permissions, and an inaccessible directory
+  silently falls back to the account home directory.
 - File management runs every filesystem operation in a privilege-dropping helper process
   (`Files/FileHelper.cs`, hidden argument `--koi-file-helper`), for the same reason terminals do:
   the service runs as root for PAM, so the main process must never read or write user files
@@ -693,7 +706,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   cols/rows, single-message input cap (edited in KiB and converted to bytes) and close timeout.
   `保存` sends `PUT /api/terminal/settings`, shows `设置已保存并立即生效`, and saved values apply to
   new terminal tabs only because already-open PTYs keep their settings; the drawer copy notes that
-  settings live in the SQLite generic settings table.
+  settings live in the SQLite generic settings table. Tabs may also be requested from the file
+  manager through `stores/terminal.ts`: `TerminalView` consumes the pending request in `setup`
+  (first mount) or via a watcher (already mounted), creates a new tab, and passes its `cwd` to
+  `TerminalPane`, which calls `openTerminalSocket(cwd)` for both the initial connect and
+  `重新连接`; the tab title appends the directory name (`终端 N · <name>`) when a `cwd` is set.
 - The 首页 panel (`views/HomeView.vue`) receives `:active` from the workspace and no longer shows
   the former “登录成功” `el-result` block. Its top is `components/system/ServerStatus.vue`: the
   server-name/kernel/uptime/process row (`.meta`, labelled `服务器名称`) sits directly below the

@@ -96,6 +96,13 @@ public static class TerminalEndpoints
             return;
         }
 
+        // 可选的工作目录来自文件管理「打开终端」；校验失败直接拒绝，不拉起 PTY。
+        if (!TryNormalizeWorkingDirectory(context.Request.Query["cwd"].FirstOrDefault(), out var workingDirectory, out var workingDirectoryError))
+        {
+            await WriteProblemAsync(context, StatusCodes.Status400BadRequest, "目录无效", workingDirectoryError ?? "工作目录不合法。");
+            return;
+        }
+
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
         using var sendLock = new SemaphoreSlim(1, 1);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
@@ -109,7 +116,8 @@ public static class TerminalEndpoints
                     [identity.Shell, .. options.ShellArguments],
                     options.DefaultCols,
                     options.DefaultRows,
-                    options.CloseTimeoutSeconds),
+                    options.CloseTimeoutSeconds,
+                    workingDirectory),
                 userName,
                 context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 context.Connection.RemotePort),
@@ -411,6 +419,60 @@ public static class TerminalEndpoints
 
     private static Task WriteProblemAsync(HttpContext context, int statusCode, string title, string detail) =>
         Results.Problem(statusCode: statusCode, title: title, detail: detail).ExecuteAsync(context);
+
+    /// <summary>
+    /// 把可选的 <c>cwd</c> 查询参数归一化为辅助进程使用的工作目录。
+    /// 空值返回空串，表示沿用账号家目录；主进程以 root 校验，只证明路径存在且是目录，
+    /// 登录用户是否真的可访问仍由降权后的 <c>chdir</c> 决定。
+    /// </summary>
+    private static bool TryNormalizeWorkingDirectory(string? raw, out string workingDirectory, out string? error)
+    {
+        workingDirectory = string.Empty;
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return true;
+        }
+
+        if (raw.Length > 4096)
+        {
+            error = "工作目录路径过长（最多 4096 个字符）。";
+            return false;
+        }
+
+        if (raw.Any(char.IsControl))
+        {
+            error = "工作目录不能包含控制字符。";
+            return false;
+        }
+
+        if (!Path.IsPathFullyQualified(raw))
+        {
+            error = "工作目录必须是绝对路径。";
+            return false;
+        }
+
+        string normalized;
+        try
+        {
+            normalized = Path.GetFullPath(raw);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            error = "工作目录格式不合法。";
+            return false;
+        }
+
+        if (!Directory.Exists(normalized))
+        {
+            error = "工作目录不存在或不是目录。";
+            return false;
+        }
+
+        workingDirectory = normalized;
+        return true;
+    }
 
     /// <summary>读取终端配置；仅 root 可读，且不检查 Enabled，便于管理员修复配置。</summary>
     private static IResult GetSettings(HttpContext context, TerminalSettingsService settingsService)

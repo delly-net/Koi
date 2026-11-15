@@ -48,12 +48,16 @@ public sealed class PosixPty : IDisposable
     public int ProcessId => _process.Id;
 
     /// <summary>分配 PTY 并启动辅助进程；失败时抛出 <see cref="IOException"/> 或 <see cref="Win32Exception"/>。</summary>
+    /// <param name="workingDirectory">
+    /// shell 的初始工作目录；空串表示使用账号家目录（默认行为）。
+    /// </param>
     public static PosixPty Start(
         UserProcessIdentity identity,
         IReadOnlyList<string> arguments,
         int cols,
         int rows,
-        int closeTimeoutSeconds)
+        int closeTimeoutSeconds,
+        string workingDirectory = "")
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -69,7 +73,7 @@ public sealed class PosixPty : IDisposable
         Process? process = null;
         try
         {
-            process = StartHelperProcess(slavePath, identity, arguments);
+            process = StartHelperProcess(slavePath, identity, arguments, workingDirectory);
             if (!WaitForReady(process, ReadyTimeoutMs, out var failureExitCode))
             {
                 throw new IOException(DescribeStartFailure(failureExitCode));
@@ -353,7 +357,8 @@ public sealed class PosixPty : IDisposable
     private static Process StartHelperProcess(
         string slavePath,
         UserProcessIdentity identity,
-        IReadOnlyList<string> arguments)
+        IReadOnlyList<string> arguments,
+        string workingDirectory)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -384,6 +389,8 @@ public sealed class PosixPty : IDisposable
         startInfo.ArgumentList.Add(identity.Gid.ToString(CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add(identity.UserName);
         startInfo.ArgumentList.Add(identity.HomeDirectory);
+        // 工作目录固定位于家目录之后、shell 之前；空串表示使用家目录。
+        startInfo.ArgumentList.Add(workingDirectory);
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);

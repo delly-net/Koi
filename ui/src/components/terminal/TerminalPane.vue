@@ -12,6 +12,8 @@ import {
 const props = defineProps<{
   /** 所在标签页是否处于激活状态，激活时重新校正尺寸。 */
   active: boolean
+  /** 初始工作目录（绝对路径）；空串表示账号家目录。 */
+  cwd?: string
 }>()
 
 type ConnectionStatus = 'connecting' | 'connected' | 'closed' | 'error'
@@ -109,7 +111,7 @@ function connect(): void {
   status.value = 'connecting'
   statusText.value = '正在连接终端…'
 
-  const ws = openTerminalSocket()
+  const ws = openTerminalSocket(props.cwd)
   socket = ws
 
   ws.onmessage = (event: MessageEvent<unknown>) => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Setting } from '@element-plus/icons-vue'
 import TerminalPane from '@/components/terminal/TerminalPane.vue'
@@ -9,10 +9,13 @@ import {
   saveTerminalSettings,
   type TerminalSettings,
 } from '@/api/terminal'
+import { useTerminalStore } from '@/stores/terminal'
 
 interface TerminalTab {
   id: string
   title: string
+  /** 初始工作目录；空串表示账号家目录。 */
+  cwd: string
 }
 
 const tabs = ref<TerminalTab[]>([])
@@ -20,11 +23,25 @@ const activeKey = ref('')
 
 let counter = 0
 
-/** 新建一个终端标签；每个标签对应一条独立的 WebSocket 与 PTY。 */
-function createTab(): void {
+/** 页签标题中的目录名：根目录显示 /，其余取最后一段。 */
+function directoryLabel(path: string): string {
+  if (!path || path === '/') {
+    return '/'
+  }
+
+  const parts = path.split('/').filter(Boolean)
+  return parts[parts.length - 1] ?? '/'
+}
+
+/**
+ * 新建一个终端标签；每个标签对应一条独立的 WebSocket 与 PTY。
+ * cwd 来自文件管理「打开终端」，标题里同时标出目录名。
+ */
+function createTab(cwd = ''): void {
   counter += 1
   const id = `terminal-${counter}-${Date.now()}`
-  tabs.value.push({ id, title: `终端 ${counter}` })
+  const title = cwd ? `终端 ${counter} · ${directoryLabel(cwd)}` : `终端 ${counter}`
+  tabs.value.push({ id, title, cwd })
   activeKey.value = id
 }
 
@@ -49,7 +66,26 @@ function removeTab(name: string | number): void {
   }
 }
 
-createTab()
+const terminal = useTerminalStore()
+
+// 终端标签可能在请求发出时尚未挂载（工作区按需挂载），setup 时先消费未处理的请求。
+const initialRequest = terminal.consume()
+createTab(initialRequest?.cwd ?? '')
+
+// 终端标签已打开时，文件管理等模块再次请求新页签走这里；消费后清空避免重复创建。
+watch(
+  () => terminal.request,
+  (request) => {
+    if (!request) {
+      return
+    }
+
+    const consumed = terminal.consume()
+    if (consumed) {
+      createTab(consumed.cwd)
+    }
+  },
+)
 
 // ---------------- 终端设置（仅 root） ----------------
 
@@ -192,7 +228,7 @@ onMounted(() => {
         :name="tab.id"
         :closable="tabs.length > 1"
       >
-        <TerminalPane :active="activeKey === tab.id" />
+        <TerminalPane :active="activeKey === tab.id" :cwd="tab.cwd" />
       </el-tab-pane>
     </el-tabs>
 

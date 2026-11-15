@@ -7,6 +7,7 @@ import {
   DocumentAdd,
   Folder,
   FolderAdd,
+  Monitor,
   MoreFilled,
   Position,
   Refresh,
@@ -28,6 +29,7 @@ import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
 import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
+import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 
 interface Crumb {
@@ -59,6 +61,7 @@ const emit = defineEmits<{
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 const filesClipboard = useFilesClipboardStore()
+const terminal = useTerminalStore()
 
 const currentPath = ref('')
 const parentPath = ref<string | null>(null)
@@ -225,6 +228,19 @@ function openInNewTab(row: FileEntry): void {
   emit('open-in-new-tab', row.path)
 }
 
+/**
+ * 以指定目录为初始工作目录新建终端页签：请求经终端 store 交给 TerminalView，
+ * 再切换到工作区「终端」标签（首次打开会挂载终端面板并消费该请求）。
+ */
+function openTerminal(directory: string): void {
+  if (!directory) {
+    return
+  }
+
+  terminal.requestTab(directory)
+  workspace.open('terminal')
+}
+
 function downloadEntry(row: FileEntry): void {
   const link = document.createElement('a')
   link.href = buildDownloadUrl(row.path)
@@ -235,7 +251,16 @@ function downloadEntry(row: FileEntry): void {
 }
 
 /** 行操作菜单命令，与模板中 el-dropdown-item 的 command 一一对应。 */
-type RowAction = 'open' | 'newtab' | 'edit' | 'download' | 'rename' | 'copy' | 'cut' | 'delete'
+type RowAction =
+  | 'open'
+  | 'newtab'
+  | 'terminal'
+  | 'edit'
+  | 'download'
+  | 'rename'
+  | 'copy'
+  | 'cut'
+  | 'delete'
 
 function onRowAction(command: RowAction, row: FileEntry): void {
   switch (command) {
@@ -244,6 +269,11 @@ function onRowAction(command: RowAction, row: FileEntry): void {
       break
     case 'newtab':
       openInNewTab(row)
+      break
+    case 'terminal':
+      if (row.isDirectory) {
+        openTerminal(row.path)
+      }
       break
     case 'edit':
       openTextEditor(row)
@@ -537,6 +567,10 @@ onMounted(() => {
         </el-breadcrumb-item>
       </el-breadcrumb>
 
+      <el-button size="small" :icon="Monitor" :disabled="!currentPath" @click="openTerminal(currentPath)">
+        打开终端
+      </el-button>
+
       <el-button size="small" :icon="Position" @click="openJump">跳转</el-button>
 
       <el-button
@@ -607,6 +641,9 @@ onMounted(() => {
                     </el-dropdown-item>
                     <el-dropdown-item command="newtab" :disabled="!row.isDirectory">
                       在新页签打开
+                    </el-dropdown-item>
+                    <el-dropdown-item command="terminal" :disabled="!row.isDirectory">
+                      打开终端
                     </el-dropdown-item>
                     <el-dropdown-item
                       command="edit"

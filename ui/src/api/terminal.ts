@@ -50,9 +50,12 @@ export type TerminalClientMessage =
 /**
  * 打开终端 WebSocket。
  * 地址经 buildWebSocketUrl 拼接：同源时浏览器自动携带会话 Cookie，跨域部署需后端放行来源。
+ * `cwd` 为可选的初始工作目录（绝对路径），由后端校验后交给 PTY 辅助进程 chdir；
+ * 省略时终端使用账号家目录。
  */
-export function openTerminalSocket(): WebSocket {
-  return new WebSocket(buildWebSocketUrl('/api/terminal/ws'))
+export function openTerminalSocket(cwd?: string): WebSocket {
+  const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+  return new WebSocket(buildWebSocketUrl(`/api/terminal/ws${query}`))
 }
 
 /** 终端配置（存储于 SQLite 通用配置表，仅 root 可读写）。 */

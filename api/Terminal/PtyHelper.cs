@@ -49,7 +49,7 @@ public static class PtyHelper
     private const int SigSetMask = 2;
     private const int ExecuteAccess = 1;
     private const int SigsetSize = 128;
-    private const int MinimumArgumentCount = 7;
+    private const int MinimumArgumentCount = 8;
 
     /// <summary>
     /// 参数以辅助模式标记开头时在当前进程执行辅助逻辑（正常不会返回）；否则返回 <c>false</c>，
@@ -85,7 +85,9 @@ public static class PtyHelper
         var slavePath = args[1];
         var userName = args[4];
         var homeDirectory = args[5];
-        var shell = args[6];
+        // 请求的工作目录（来自文件管理「打开终端」）；空串表示使用家目录。
+        var workingDirectory = args[6];
+        var shell = args[7];
         var shellArguments = args.Length > MinimumArgumentCount ? args[MinimumArgumentCount..] : [];
 
         var slaveFd = open(slavePath, OpenReadWrite | OpenNoCtty);
@@ -119,8 +121,12 @@ public static class PtyHelper
             _exit(SetUidFailedExitCode);
         }
 
-        // 家目录不可用时保持当前目录，不阻断 shell 启动。
-        chdir(homeDirectory);
+        // 优先切到请求的工作目录（文件管理打开终端时指定）；为空或降权后不可访问
+        // （目录被删、无权限）时回退家目录，家目录也不可用则保持当前目录，均不阻断 shell 启动。
+        if (string.IsNullOrEmpty(workingDirectory) || chdir(workingDirectory) != 0)
+        {
+            chdir(homeDirectory);
+        }
 
         // 按登录用户权限判断 shell 是否可执行，尽早给出可读的启动失败原因。
         if (access(shell, ExecuteAccess) != 0)
