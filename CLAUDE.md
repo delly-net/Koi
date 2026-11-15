@@ -22,14 +22,16 @@ are implemented.
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST, docker-CLI-backed container/image management restricted to configured
   groups, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
-  restricted to configured groups, Linux `/proc`-backed server status (CPU/memory/disk/network) for
-  all signed-in users, and static hosting of the built SPA from `wwwroot` with history-mode
-  fallback.
+  restricted to configured groups, apt/dnf/yum/pacman/zypper-backed application management
+  (installed/search/updates, background jobs for install/remove/upgrade/refresh, and software
+  source management) restricted to configured groups, Linux `/proc`-backed server status
+  (CPU/memory/disk/network) for all signed-in users, and static hosting of the built SPA from
+  `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
   multi-tab xterm.js terminal page, a file manager page, a multi-tab text editor page, a
-  container manager page, a systemd service manager page and a homepage server-status panel
-  refreshed every 5 seconds.
+  container manager page, a systemd service manager page, an application manager page with a
+  live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -57,11 +59,14 @@ tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost w
   `Files/` (path validation, file helper process, operation service, REST endpoints),
   `Docker/` (docker CLI runner, group authorization guard, REST endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, REST endpoints),
+  `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
+  service, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
-  docker API and service API types), `src/config/` (runtime config incl. text file associations),
-  `src/stores/` (Pinia auth, workspace tab and editor tab state), `src/router/`, `src/views/`
-  (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker / service panels),
+  docker API, service API and package API types), `src/config/` (runtime config incl. text file
+  associations), `src/stores/` (Pinia auth, workspace tab and editor tab state), `src/router/`,
+  `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
+  service / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
   `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
@@ -154,10 +159,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
   no `forkpty`, no libutil, no C toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
-  `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable`),
-  `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`, `GET /api/terminal/ws`,
-  `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*` and `/api/services/*` groups
-  described below; errors use ProblemDetails.
+  `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
+  `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
+  `GET /api/terminal/ws`, `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*`,
+  `/api/services/*` and `/api/packages/*` groups described below; errors use ProblemDetails.
   Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
@@ -294,6 +299,80 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   auto-detect `/usr/bin/...`, `/bin/...`, then `PATH`), `AllowedGroups`, `CommandTimeoutSeconds`
   (120, above systemd's 90-second stop timeout), `MaxOutputBytes` (4 MiB), `MaxLogBytes` (2 MiB),
   `LogTailDefault` (500), `LogTailMax` (5000).
+- Application management (`api/Packages/`, `/api/packages/**`) runs apt, dnf, yum, pacman or
+  zypper from the main process through `Process.Start` + `ArgumentList` — never a shell, never a
+  fixed `sh -c` wrapper. `PackageManagerDetector` uses the `Manager` value from the settings
+  store (SQLite, see below) when set and otherwise probes in the order
+  apt → dnf → yum → pacman → zypper using
+  `/usr/bin`, `/bin`, `/usr/local/bin`, `/usr/sbin`, `/sbin` and then `PATH`. Each backend
+  (`AptPackageManager`, `RpmPackageManager`, `PacmanPackageManager`, `ZypperPackageManager`)
+  owns its command lines and parsers; package names must match
+  `^[A-Za-z0-9][A-Za-z0-9+._:@/=~-]{0,199}$` so a name can never be read as an option.
+  All commands set `LANG=C`, `LC_ALL=C`, `SYSTEMD_COLORS=0`, and for Debian-family commands
+  `DEBIAN_FRONTEND=noninteractive`, `DEBCONF_NONINTERACTIVE_SEEN=true`,
+  `APT_LISTCHANGES_FRONTEND=none`, `NEEDRESTART_MODE=a` plus `Dpkg::Options` forcing the local
+  config file; zypper runs with `--non-interactive`, pacman with `--noconfirm`, dnf/yum with `-y`.
+- Package query endpoints (session cookie required): `GET /status` returns the detected manager,
+  version, whether the signed-in account is root, whether the service process is root
+  (`canModify`) and whether source writes are supported; all endpoints read the live
+  `PackageSettingsService.Current` snapshot, so saved settings take effect immediately;
+  `GET /installed?query=&limit=` filters
+  the installed list and caps it by `MaxInstalledEntries`; `GET /search?q=` returns at most 200
+  local-index results; `GET /updates` lists upgradable packages (dnf/yum cannot report the
+  current version, so it is empty). A missing manager, non-Linux host or `Enabled=false` returns
+  503 ProblemDetails.
+- Package mutations are in-memory background jobs (`PackageJobManager`): `POST /api/packages/jobs`
+  with `{action, packages}` where action is `install`, `remove`, `upgrade`, `upgrade-all` or
+  `refresh`, returns 202 `{jobId, action, packages}`. Only one job may run at a time (otherwise
+  409) because package managers hold database locks; `GET /jobs/{id}?offset=` returns an
+  incremental log slice plus `nextOffset`, status (`running`/`succeeded`/`failed`/`cancelled`),
+  exit code and truncation flag, and `POST /jobs/{id}/cancel` kills the process tree. Jobs are
+  not persisted: a Koi restart loses them, and finished jobs expire after
+  `JobRetentionMinutes`. Logs are capped by `MaxLogBytes`; hitting the cap terminates the command.
+- Package authorization mirrors services: every `/api/packages/**` endpoint requires a session
+  and membership in the allowed groups (default `["sudo","wheel"]`, stored in the settings table
+  rather than `appsettings.json`), resolved with `id -nG -- <user>`; uid 0 is always allowed. The
+  order is Enabled → Linux → manager availability → session → account name → root → group list →
+  membership. In addition, jobs and source writes require the Koi service process itself to run
+  as root (`PackageAccessGuard.IsServiceRoot`, resolved through `Environment.UserName` +
+  `getpwnam_r`) and otherwise return 403, because package managers cannot change the system as an
+  unprivileged service account. The settings endpoints are the exception: `GET/PUT
+  /api/packages/settings` only allow uid 0 (`PackageAccessGuard.IsRootAccount`) and deliberately
+  skip the Enabled/manager checks so an administrator can repair a disabled or misconfigured
+  module; non-root gets 403.
+- Source management (`PackageSourceService`) is complete for apt, dnf/yum and zypper and
+  read-only for pacman, whose repositories live in `/etc/pacman.conf`. Apt reads
+  `/etc/apt/sources.list`, `sources.list.d/*.list` and `*.sources` (deb822); dnf/yum reads
+  `*.repo` INI sections from `/etc/yum.repos.d` (and `/etc/yum/repos.d`); zypper uses
+  `zypper repos -u`, `addrepo`, `modifyrepo -e/-d` and `removerepo`. Added apt/dnf sources are
+  written as `koi-<name>.list` / `koi-<name>.repo`; toggling an apt `.list` line comments or
+  uncomments it, a deb822 stanza gets `Enabled: yes/no`, an rpm section gets `enabled=1/0`.
+  File rewrites use a same-directory temp file, preserve the original Unix mode and atomically
+  rename; symlinked source files are skipped. Empty `sources.list.d`/`yum.repos.d` files are
+  deleted after the last entry is removed; `/etc/apt/sources.list` itself is never deleted.
+  Added rpm sources default to `gpgcheck=1` unless the request sets `gpgCheck=false`; repository
+  signing keys themselves are still maintained by the administrator. Source ids are SHA-256
+  hashes of kind + file + normalized entry, so they survive enable/disable.
+- Package source API: `GET /api/packages/sources` → `{manager, supported, readOnly, sources}`;
+  `POST /api/packages/sources` `{name, uri, suite, components, gpgCheck}`; `POST
+  /sources/{id}/enable|disable`; `DELETE /sources/{id}`. Repository URIs must be absolute
+  http/https/ftp/file URLs; apt suites/components accept only letters, digits and `. / + _ ~ -`.
+  Errors: 400 invalid input or unsupported write (pacman), 403 not in an allowed group/service
+  not root, 404 missing source, 409 existing source or package-manager lock/dependency conflict,
+  413 output too large, 502 repository/network failure, 503 disabled/non-Linux/manager missing,
+  504 timeout.
+- Package settings are **not** read from `appsettings.json` (`Koi:Packages` was removed): the
+  `PackageOptions` code defaults are `Enabled=true`, `Manager=""` (auto-detect),
+  `AllowedGroups=["sudo","wheel"]`, `CommandTimeoutSeconds=120`, `JobTimeoutSeconds=1800`,
+  `MaxOutputBytes=4 MiB`, `MaxLogBytes=2 MiB`, `JobRetentionMinutes=30`,
+  `MaxPackagesPerJob=50`, `MaxInstalledEntries=5000`. They are overridden by the SQLite generic
+  settings table and edited through `GET/PUT /api/packages/settings` (root only; PUT accepts the
+  full `PackageOptions` object, validates it server-side — manager whitelist, group-name format,
+  numeric ranges — and returns the saved object). `PackageSettingsService` loads the row at
+  startup, atomically replaces its `Current` snapshot on save and raises `Changed`, which makes
+  `PackageManagerResolver` re-detect the backend; every consumer reads `Current`, so changes
+  apply without restarting `koi.service`. `/api/health` exposes `packageAvailable` from the
+  resolver.
 - Server status (`api/Monitor/`, `GET /api/system/status`) is available to every signed-in user
   because it exposes only aggregate host metrics. It reads `/proc/stat` (CPU), `/proc/meminfo`
   (memory and swap), `/proc/loadavg`, `/proc/uptime`, `/proc/net/dev` (every interface except
@@ -324,9 +403,19 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   bundled defaults, so the publish output must keep `appsettings.json`. `install.sh` and the
   deb/rpm packages pre-create the file; it is a deb conffile / rpm `%config(noreplace)` and is
   never overwritten by an upgrade. Reload-on-change is off because options are snapshotted at
-  startup. See `api/Configuration/KoiExternalConfigurationExtensions.cs`.
+  startup. See `api/Configuration/KoiExternalConfigurationExtensions.cs`. An old `/etc/koi/
+  appsettings.json` may still contain `Koi:Packages`; it is no longer read and never overrides the
+  database settings.
 - Runtime state lives in `api/koi.db` (SQLite, created with `EnsureCreated` — no migrations yet).
-  The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers.
+  The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers. Since
+  `EnsureCreated` does not add tables to an existing database, `KoiDbSchema.EnsureCompatibilityTables`
+  runs idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS` for the
+  generic settings table after `EnsureCreated`; keep its DDL in sync with the EF model (or replace
+  it with EF migrations).
+- Generic feature settings live in `FeatureConfigs` (`api/Data/FeatureConfigEntity.cs`):
+  `Id`, `Feature` (unique, e.g. `packages`), `ConfigJson`, `UpdatedAt`, `UpdatedBy`. Each
+  feature owns one JSON row, so future modules can reuse the table and `FeatureConfigStore`
+  (`api/Configuration/`) instead of adding configuration keys to `appsettings.json`.
 - The SQLite provider does not translate `DateTimeOffset` comparisons, so `KoiDbContext`
   maps every `DateTimeOffset` property to UTC ticks (`long`) via `UtcTicksConverter`
   (`ConfigureConventions`). Do not remove it, and do not add per-property conversions that
@@ -341,9 +430,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the six modules mount in the sibling `.panels`
+  empty and `.el-tabs__content` is hidden; the seven modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
-  `docker` / `service`). `首页` is
+  `docker` / `service` / `package`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
   a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
@@ -371,8 +460,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `v-loading`, so the previous snapshot stays visible and is replaced when the new one arrives;
   only the first load (no data yet) shows `el-skeleton`, and the `重试` button keeps its own
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
-  persistent alert with `重试` instead of a toast. Below it are the five module entries (terminal /
-  files / editor / docker / service) driven by the `MODULES` array in `HomeView.vue`, each rendered
+  persistent alert with `重试` instead of a toast. Below it are the six module entries (terminal /
+  files / editor / docker / service / package) driven by the `MODULES` array in `HomeView.vue`, each
+  rendered
   as a lightweight tile: a 40 px Element Plus icon above the entry name, no border by default and a
   primary-tinted highlight with a slight lift on hover/focus. The whole tile is the button
   (`role="button"`, `tabindex="0"`, `@click` plus `Enter` / `Space`) and calls
@@ -434,6 +524,32 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   itself interrupts the current page. Logs open in a dialog with a tail selector
   (`journalctl` snapshot, not follow); detail opens in a drawer fed by `systemctl show`. 403 (not
   in an allowed group) and 503 (systemd unavailable) render as persistent alerts instead of toasts.
+- The 应用管理 tab (`ui/src/views/PackageView.vue`, workspace key `package`) has four inner tabs:
+  已安装 / 安装 / 更新 / 软件源. It fetches the manager status on mount, loads each data tab on
+  first activation, and the manual `刷新` button reloads the status plus the active tab.
+  已安装 offers a client-side name filter and a per-row `卸载`; 安装 offers keyword search plus a
+  direct exact-name install input, with per-row `安装`; 更新 shows current/new versions (current
+  version may be `—` for dnf/yum), a `系统更新` button for all upgrades and a per-row `升级`.
+  软件源 lists name, URI, apt suite/components, enabled state, backing file and a Koi-created tag,
+  with `添加软件源`, per-row `启用`/`禁用` and `删除`; the add dialog collects name/URI and, for
+  apt, suite/components, and for dnf/yum a GPG-check switch. pacman renders the source tab as
+  read-only. All package-changing actions confirm first and then open a job-log dialog that polls
+  `GET /api/packages/jobs/{id}` every second, appends incremental log slices (capped in the
+  browser), offers `取消任务` while running, and refreshes the active tab when the job finishes;
+  closing the dialog while a job runs keeps it running but stops showing live output until it
+  completes. 403 (not in an allowed group), 503 (non-Linux / no manager) and the
+  `status.canModify === false` case (Koi service not running as root) render as persistent
+  `el-alert` notices; action buttons are disabled while the service is not root or a job is
+  running. The `刷新索引` toolbar action starts a `refresh` job. The top-right toolbar shows a
+  circular settings icon (`Setting`, `aria-label="应用管理设置"`) **only to root**: on mount the
+  page silently calls `GET /api/packages/settings`; success shows the button, any failure
+  (403 for non-root, 503 on non-Linux) hides it without an error toast. The click opens a
+  right-side `el-drawer` (480 px) that edits every `PackageOptions` value — enable switch,
+  manager select, multi-select/creatable allowed groups, query/job timeouts, output/log caps
+  (edited in MiB and converted to bytes), job retention, per-job package cap and installed-list
+  cap. `保存` sends `PUT /api/packages/settings`, then shows `设置已保存并立即生效` and refreshes
+  the status plus the active tab (saving `Enabled=false` therefore surfaces the 503 alert
+  immediately). The drawer's copy notes that settings live in the SQLite generic settings table.
 
 ## Knowledge base
 

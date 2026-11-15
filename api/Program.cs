@@ -6,6 +6,7 @@ using Koi.Api.Docker;
 using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Monitor;
+using Koi.Api.Packages;
 using Koi.Api.Services;
 using Koi.Api.Terminal;
 using Microsoft.AspNetCore.Http.Features;
@@ -70,6 +71,13 @@ builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
 builder.Services.AddSingleton<SystemMonitorService>();
 builder.Services.AddSingleton<SystemctlCommandRunner>();
+// 应用管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
+builder.Services.AddSingleton<FeatureConfigStore>();
+builder.Services.AddSingleton<PackageSettingsService>();
+builder.Services.AddSingleton<PackageCommandRunner>();
+builder.Services.AddSingleton<PackageManagerResolver>();
+builder.Services.AddSingleton<PackageSourceService>();
+builder.Services.AddSingleton<PackageJobManager>();
 
 // 上传大小由 Koi:Files:MaxUploadBytes 决定；FormOptions 与 Kestrel 限制需同步放宽。
 var fileOptions = builder.Configuration
@@ -121,7 +129,13 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<KoiDbContext>();
     db.Database.EnsureCreated();
+
+    // EnsureCreated 不会给已存在的数据库补表：幂等创建新增的通用配置表。
+    KoiDbSchema.EnsureCompatibilityTables(db);
 }
+
+// 应用管理配置在启动时加载一次；之后由设置端点保存并立即替换运行时快照。
+await app.Services.GetRequiredService<PackageSettingsService>().LoadAsync();
 
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
@@ -147,7 +161,8 @@ app.UseWebSockets(new WebSocketOptions
 
 app.MapGet("/api/health", (
     IOptions<DockerOptions> dockerOptions,
-    IOptions<ServiceOptions> serviceOptions) => Results.Ok(new
+    IOptions<ServiceOptions> serviceOptions,
+    PackageManagerResolver packageResolver) => Results.Ok(new
 {
     status = "ok",
     platform = OperatingSystem.IsLinux() ? "linux" : "other",
@@ -157,6 +172,7 @@ app.MapGet("/api/health", (
     dockerAvailable = DockerCommandRunner.IsAvailable(dockerOptions.Value),
     systemMonitorAvailable = OperatingSystem.IsLinux(),
     serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceOptions.Value),
+    packageAvailable = packageResolver.Backend is not null,
     timestamp = DateTimeOffset.UtcNow,
 }));
 
@@ -166,6 +182,7 @@ app.MapFileEndpoints();
 app.MapDockerEndpoints();
 app.MapSystemMonitorEndpoints();
 app.MapServiceEndpoints();
+app.MapPackageEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。
 app.MapKoiFallbacks();

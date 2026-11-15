@@ -7,6 +7,8 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
 {
     public DbSet<SessionEntity> Sessions => Set<SessionEntity>();
 
+    public DbSet<FeatureConfigEntity> FeatureConfigs => Set<FeatureConfigEntity>();
+
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
         base.ConfigureConventions(configurationBuilder);
@@ -25,6 +27,14 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.TokenHash).IsUnique();
             entity.HasIndex(x => x.ExpiresAt);
+        });
+
+        // 通用功能配置：每个功能一行，Feature 唯一，配置内容为 JSON。
+        modelBuilder.Entity<FeatureConfigEntity>(entity =>
+        {
+            entity.ToTable("FeatureConfigs");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Feature).IsUnique();
         });
     }
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { Box, EditPen, FolderOpened, Monitor, SetUp } from '@element-plus/icons-vue'
+import { Box, EditPen, FolderOpened, Goods, Monitor, SetUp } from '@element-plus/icons-vue'
 import { useWorkspaceStore, type WorkspaceTabKey } from '@/stores/workspace'
 import ServerStatus from '@/components/system/ServerStatus.vue'
 
@@ -47,6 +47,12 @@ const MODULES: HomeModule[] = [
     label: '服务管理',
     description: '通过 systemctl 查看系统服务状态，启停、重启、重载服务，管理开机自启并查看服务日志。',
     icon: SetUp,
+  },
+  {
+    key: 'package',
+    label: '应用管理',
+    description: '通过 apt/dnf/yum/pacman/zypper 安装、卸载与更新软件包，管理软件源；仅管理员组可用。',
+    icon: Goods,
   },
 ]
 
