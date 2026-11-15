@@ -1,8 +1,16 @@
 namespace Koi.Api.Terminal;
 
-/// <summary>在线终端配置，对应 appsettings.json 中的 Koi:Terminal 节。</summary>
+/// <summary>
+/// 在线终端配置。默认值定义在代码中，运行期以 SQLite 通用配置表
+/// （Feature = <c>terminal</c>，由 root 在终端设置抽屉中编辑）为准。
+/// </summary>
+/// <remarks>
+/// 首次启动且数据库中没有 <c>terminal</c> 记录时，会把 appsettings.json / 外部配置中的
+/// <see cref="SectionName"/> 节一次性迁移进数据库，此后只读数据库。
+/// </remarks>
 public sealed class TerminalOptions
 {
+    /// <summary>仅用于首次迁移读取旧配置节名。</summary>
     public const string SectionName = "Koi:Terminal";
 
     /// <summary>是否启用终端能力；关闭后端点直接返回 503。</summary>

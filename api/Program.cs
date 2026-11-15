@@ -54,8 +54,6 @@ builder.Services.AddDbContext<KoiDbContext>(options =>
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
 builder.Services.Configure<KoiStaticFilesOptions>(
     builder.Configuration.GetSection(KoiStaticFilesOptions.SectionName));
-builder.Services.Configure<TerminalOptions>(
-    builder.Configuration.GetSection(TerminalOptions.SectionName));
 builder.Services.Configure<FileOptions>(
     builder.Configuration.GetSection(FileOptions.SectionName));
 builder.Services.Configure<DockerOptions>(
@@ -66,6 +64,8 @@ builder.Services.Configure<ServiceOptions>(
     builder.Configuration.GetSection(ServiceOptions.SectionName));
 builder.Services.AddSingleton<IAuthenticator, PamAuthenticator>();
 builder.Services.AddScoped<SessionService>();
+// 终端配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
+builder.Services.AddSingleton<TerminalSettingsService>();
 builder.Services.AddSingleton<TerminalSessionManager>();
 builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
@@ -137,6 +137,9 @@ using (var scope = app.Services.CreateScope())
 
 // 应用管理配置在启动时加载一次；之后由设置端点保存并立即替换运行时快照。
 await app.Services.GetRequiredService<PackageSettingsService>().LoadAsync();
+
+// 终端配置同样在启动时加载；数据库无记录时把旧 Koi:Terminal 节一次性迁移进来。
+await app.Services.GetRequiredService<TerminalSettingsService>().LoadAsync();
 
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions

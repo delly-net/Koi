@@ -1,3 +1,4 @@
+import { request } from './http'
 import { buildWebSocketUrl } from '@/config/appConfig'
 
 /** 服务端 → 客户端：终端已就绪。 */
@@ -52,4 +53,31 @@ export type TerminalClientMessage =
  */
 export function openTerminalSocket(): WebSocket {
   return new WebSocket(buildWebSocketUrl('/api/terminal/ws'))
+}
+
+/** 终端配置（存储于 SQLite 通用配置表，仅 root 可读写）。 */
+export interface TerminalSettings {
+  enabled: boolean
+  /** 登录 shell 绝对路径；空字符串表示使用系统账号的登录 shell。 */
+  shell: string
+  shellArguments: string[]
+  maxSessionsPerUser: number
+  maxSessionsTotal: number
+  maxInputBytes: number
+  defaultCols: number
+  defaultRows: number
+  closeTimeoutSeconds: number
+}
+
+/** 读取终端配置；非 root 账号会收到 403。 */
+export function getTerminalSettings(): Promise<TerminalSettings> {
+  return request<TerminalSettings>('/api/terminal/settings')
+}
+
+/** 保存终端配置；成功后新会话立即使用新值。 */
+export function saveTerminalSettings(payload: TerminalSettings): Promise<TerminalSettings> {
+  return request<TerminalSettings>('/api/terminal/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }

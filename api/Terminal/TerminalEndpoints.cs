@@ -25,17 +25,26 @@ public static class TerminalEndpoints
             .WithTags("Terminal")
             .MapGet("/ws", HandleWebSocketAsync);
 
+        // 设置端点仅 root 可用，且不受 Enabled / 平台检查影响，保证关闭终端后仍能修复配置。
+        var settingsGroup = app.MapGroup("/api/terminal")
+            .WithTags("Terminal")
+            .AddEndpointFilter<RequireSessionFilter>();
+
+        settingsGroup.MapGet("/settings", GetSettings);
+        settingsGroup.MapPut("/settings", SaveSettingsAsync);
+
         return app;
     }
 
     private static async Task HandleWebSocketAsync(
         HttpContext context,
         TerminalSessionManager sessions,
-        IOptions<TerminalOptions> optionsAccessor,
+        TerminalSettingsService settingsService,
         IOptions<AuthOptions> authOptionsAccessor,
         ILoggerFactory loggerFactory)
     {
-        var options = optionsAccessor.Value;
+        // 取当前快照：保存设置后，新连接立即使用新值。
+        var options = settingsService.Current;
         var logger = loggerFactory.CreateLogger("Koi.Api.Terminal");
 
         if (!options.Enabled)
@@ -402,6 +411,67 @@ public static class TerminalEndpoints
 
     private static Task WriteProblemAsync(HttpContext context, int statusCode, string title, string detail) =>
         Results.Problem(statusCode: statusCode, title: title, detail: detail).ExecuteAsync(context);
+
+    /// <summary>读取终端配置；仅 root 可读，且不检查 Enabled，便于管理员修复配置。</summary>
+    private static IResult GetSettings(HttpContext context, TerminalSettingsService settingsService)
+    {
+        var error = AuthorizeSettings(context);
+        return error ?? Results.Ok(settingsService.Current);
+    }
+
+    /// <summary>保存终端配置；保存后立即替换运行时快照，新会话随即生效。</summary>
+    private static async Task<IResult> SaveSettingsAsync(
+        HttpContext context,
+        TerminalOptions? request,
+        TerminalSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var error = AuthorizeSettings(context);
+        if (error is not null)
+        {
+            return error;
+        }
+
+        if (request is null)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "请求内容为空", "请提供完整的终端配置。");
+        }
+
+        var settings = TerminalSettingsValidator.Normalize(request);
+        if (TerminalSettingsValidator.Validate(settings) is { } detail)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "配置不合法", detail);
+        }
+
+        var userName = context.User.Identity?.Name ?? string.Empty;
+        return Results.Ok(await settingsService.SaveAsync(settings, userName, cancellationToken));
+    }
+
+    /// <summary>
+    /// 设置端点仅允许 uid 0 的登录账号。root 判定必须经 <c>getpwnam_r</c> 解析，
+    /// 不能按用户名比较。
+    /// </summary>
+    private static IResult? AuthorizeSettings(HttpContext context)
+    {
+        var userName = context.User.Identity?.Name ?? string.Empty;
+        if (string.IsNullOrEmpty(userName))
+        {
+            return Problem(StatusCodes.Status401Unauthorized, "未登录", "请先登录后再读取终端设置。");
+        }
+
+        if (UserProcessIdentityResolver.TryResolve(userName, configuredShell: null) is not { Uid: 0 })
+        {
+            return Problem(
+                StatusCodes.Status403Forbidden,
+                "无权修改终端设置",
+                "只有 root（uid 0）账号可以读取或修改终端设置。");
+        }
+
+        return null;
+    }
+
+    private static IResult Problem(int statusCode, string title, string detail) =>
+        Results.Problem(statusCode: statusCode, title: title, detail: detail);
 
     private sealed record TerminalReadyMessage(string Type, string SessionId, string UserName, int Pid, int Cols, int Rows);
 

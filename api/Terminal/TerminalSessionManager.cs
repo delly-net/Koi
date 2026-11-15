@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using Microsoft.Extensions.Options;
 
 namespace Koi.Api.Terminal;
 
@@ -7,14 +6,17 @@ namespace Koi.Api.Terminal;
 /// 在线终端会话登记表（单例）。负责并发上限、按用户回收与宿主关闭时的统一清理。
 /// 终端会话为内存态：服务重启后全部消失，符合「断开即销毁」策略。
 /// </summary>
+/// <remarks>
+/// 配置来自 <see cref="TerminalSettingsService.Current"/>，每次创建会话时重新读取，
+/// 不能在单例中缓存快照，否则界面保存设置后无法立即生效。
+/// </remarks>
 public sealed class TerminalSessionManager(
-    IOptions<TerminalOptions> options,
+    TerminalSettingsService settings,
     ILogger<TerminalSessionManager> logger) : IDisposable
 {
     private readonly ConcurrentDictionary<string, TerminalSession> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _perUserCounts = new(StringComparer.Ordinal);
     private readonly object _gate = new();
-    private readonly TerminalOptions _options = options.Value;
 
     private int _total;
     private int _disposed;
@@ -25,6 +27,9 @@ public sealed class TerminalSessionManager(
     /// </summary>
     public TerminalSession? TryCreate(string userName, Func<TerminalSession> factory, out string? error)
     {
+        // 每次创建会话都取当前快照，保证保存设置后立即使用新的并发上限。
+        var options = settings.Current;
+
         lock (_gate)
         {
             if (_disposed != 0)
@@ -33,16 +38,16 @@ public sealed class TerminalSessionManager(
                 return null;
             }
 
-            if (_total >= _options.MaxSessionsTotal)
+            if (_total >= options.MaxSessionsTotal)
             {
-                error = $"终端会话总数已达上限（{_options.MaxSessionsTotal}），请稍后再试。";
+                error = $"终端会话总数已达上限（{options.MaxSessionsTotal}），请稍后再试。";
                 return null;
             }
 
             _perUserCounts.TryGetValue(userName, out var userCount);
-            if (userCount >= _options.MaxSessionsPerUser)
+            if (userCount >= options.MaxSessionsPerUser)
             {
-                error = $"每个账号最多同时打开 {_options.MaxSessionsPerUser} 个终端。";
+                error = $"每个账号最多同时打开 {options.MaxSessionsPerUser} 个终端。";
                 return null;
             }
 

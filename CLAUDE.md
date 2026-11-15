@@ -154,17 +154,32 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   than `waitpid`, so do not reintroduce `waitpid` or `_exit` in the parent.
 - Terminal sessions live in memory (`TerminalSessionManager`): disconnecting destroys the PTY and
   child, logout closes that user's terminals, host shutdown reaps them all. Concurrency is capped by
-  `Koi:Terminal:MaxSessionsPerUser` / `MaxSessionsTotal`. Config keys: `Koi:Terminal:Enabled`,
-  `Shell` (empty = account login shell), `ShellArguments`, `MaxInputBytes`, `DefaultCols`,
-  `DefaultRows`, `CloseTimeoutSeconds`. `PosixPty` relies on `AllowUnsafeBlocks` (only that file
-  uses pointers) and calls `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc —
-  no `forkpty`, no libutil, no C toolchain on the build host.
+  `MaxSessionsPerUser` / `MaxSessionsTotal`.
+- Terminal settings follow the application-management pattern (`TerminalSettingsService`,
+  `api/Terminal/TerminalSettingsService.cs`): they are **not** read from `appsettings.json`
+  (`Koi:Terminal` was removed). Defaults live in `TerminalOptions`; the runtime source is the SQLite
+  generic settings table (`Feature = terminal`) and root edits them in the terminal page's settings
+  drawer. `GET/PUT /api/terminal/settings` require a session and uid 0 (resolved through
+  `getpwnam_r`, not a name comparison), and deliberately skip the `Enabled`/platform checks so a
+  disabled or broken configuration can be repaired. Non-root gets 403. On first start, when no
+  `terminal` row exists, `TerminalSettingsService.LoadAsync` seeds the row from the legacy
+  `Koi:Terminal` configuration section (the `/etc/koi/appsettings.json` overlay still counts) or from
+  the code defaults; after that the section is ignored. The option set is `Enabled`, `Shell` (empty =
+  account login shell), `ShellArguments`, `MaxSessionsPerUser`, `MaxSessionsTotal`, `MaxInputBytes`,
+  `DefaultCols`, `DefaultRows`, `CloseTimeoutSeconds`. Saves replace the `Current` snapshot
+  atomically and raise `Changed`; the WebSocket endpoint takes the snapshot per connection and
+  `TerminalSessionManager.TryCreate` reads it per session, so nothing may cache
+  `IOptions<TerminalOptions>` (that would make saves ineffective). Saved values apply to new
+  sessions only. `PosixPty` relies on `AllowUnsafeBlocks` (only that file uses pointers) and calls
+  `posix_openpt`/`grantpt`/`unlockpt`/`ptsname_r` directly from libc — no `forkpty`, no libutil, no C
+  toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
-  `GET /api/terminal/ws`, `GET /api/system/status`, and the `/api/files/*`, `/api/docker/*`,
-  `/api/services/*` and `/api/packages/*` groups described below; errors use ProblemDetails.
-  Unmatched `/api/**` paths return a 404 ProblemDetails and never fall back to the SPA.
+  `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET /api/system/status`, and the
+  `/api/files/*`, `/api/docker/*`, `/api/services/*` and `/api/packages/*` groups described below;
+  errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
+  back to the SPA.
 - Terminal protocol (`GET /api/terminal/ws`, WebSocket JSON text frames, camelCase): client sends
   `{"type":"input","data":...}`, `{"type":"resize","cols","rows"}`, `{"type":"ping"}`; the server
   sends `ready` (sessionId/userName/pid/cols/rows), `output` (UTF-8 decoded text), `exit` (code),
@@ -468,6 +483,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `.xterm-screen` height with the `.xterm` client height and drops rows (never adds) until nothing
   overflows, and the pane is refitted once `document.fonts.ready` resolves because font metrics set
   the cell height. Hidden panes (size < 24 px) are still skipped.
+- The 在线终端 page (`views/TerminalView.vue`) top-right toolbar carries a circular `设置` gear
+  (`Setting`, `aria-label="终端设置"`) **only to root**: on mount the page silently calls
+  `GET /api/terminal/settings`; success shows the button, any failure (403 for non-root, 503 on
+  non-Linux) hides it without an error toast. The click opens a 480 px `el-drawer` editing every
+  `TerminalOptions` value — enable switch, Shell path (empty = account login shell), Shell arguments
+  as a multi-select/creatable list (one tag per argument), per-user/total session caps, default
+  cols/rows, single-message input cap (edited in KiB and converted to bytes) and close timeout.
+  `保存` sends `PUT /api/terminal/settings`, shows `设置已保存并立即生效`, and saved values apply to
+  new terminal tabs only because already-open PTYs keep their settings; the drawer copy notes that
+  settings live in the SQLite generic settings table.
 - The 首页 panel (`views/HomeView.vue`) receives `:active` from the workspace and no longer shows
   the former “登录成功” `el-result` block. Its top is `components/system/ServerStatus.vue`: four
   status cards (CPU usage/cores/load, memory + swap, per-mount disk usage, network receive/send
