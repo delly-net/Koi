@@ -9,6 +9,7 @@ export type WorkspaceTabKey =
   | 'editor'
   | 'docker'
   | 'service'
+  | 'process'
   | 'package'
 
 /** 标签元信息；首页固定常驻，其余标签按需打开并可关闭。 */
@@ -19,6 +20,7 @@ export const WORKSPACE_TAB_TITLES: Record<WorkspaceTabKey, string> = {
   editor: '文本编辑',
   docker: '容器管理',
   service: '服务管理',
+  process: '进程管理',
   package: '应用管理',
 }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { Box, EditPen, FolderOpened, Goods, Monitor, SetUp } from '@element-plus/icons-vue'
+import { Box, Cpu, EditPen, FolderOpened, Goods, Monitor, SetUp } from '@element-plus/icons-vue'
 import { useWorkspaceStore, type WorkspaceTabKey } from '@/stores/workspace'
 import ServerStatus from '@/components/system/ServerStatus.vue'
 
@@ -52,6 +52,12 @@ const MODULE_GROUPS: HomeModuleGroup[] = [
         label: '服务管理',
         description: '通过 systemctl 查看系统服务状态，启停、重启、重载服务，管理开机自启并查看服务日志。',
         icon: SetUp,
+      },
+      {
+        key: 'process',
+        label: '进程管理',
+        description: '读取 /proc 查看软件进程的 CPU/内存占用与命令行，结束异常进程；仅管理员组可用。',
+        icon: Cpu,
       },
       {
         key: 'package',

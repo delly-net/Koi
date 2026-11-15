@@ -27,7 +27,10 @@ are implemented.
   groups, with its settings stored in the SQLite settings table and edited by root through a
   settings drawer, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, with its settings stored in the SQLite settings table and
-  edited by root through a settings drawer, apt/dnf/yum/pacman/zypper-backed application management
+  edited by root through a settings drawer, `/proc`-backed process management (list/detail with
+  CPU and memory usage, SIGTERM/SIGKILL termination) restricted to configured groups, with its
+  settings stored in the SQLite settings table and edited by root through a settings drawer,
+  apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
   filtering, background jobs for install/remove/upgrade/refresh, and software source management)
   restricted to configured groups, Linux `/proc`-backed server status
@@ -36,8 +39,9 @@ are implemented.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
   multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page with a
-  root-only extension settings drawer, a container manager page, a systemd service manager page, an application manager page with a
-  live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
+  root-only extension settings drawer, a container manager page, a systemd service manager page, a
+  process manager page with a root-only settings drawer and visible-only polling, an application
+  manager page with a live job-log dialog, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
@@ -82,15 +86,17 @@ generic settings table (`Feature = files`).
   endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, settings
   service/validator, REST endpoints),
+  `Processes/` (`/proc` collector and signal sender, group authorization guard, settings
+  service/validator, REST endpoints),
   `Packages/` (package-manager backends, command runner, in-memory job manager, source-file
   service, group authorization guard, REST endpoints),
   `Monitor/` (Linux `/proc` and statvfs status collector, REST endpoint), `appsettings*.json`.
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
-  editor association/settings API, docker API, service API and package API types), `src/config/`
+  editor association/settings API, docker API, service API, process API and package API types), `src/config/`
   (runtime config and the reactive text-association rules), `src/stores/` (Pinia auth, workspace
   tab and editor tab state), `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
-  service / package panels),
+  service / process / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
   `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
@@ -198,11 +204,11 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   toolchain on the build host.
 - API contract: `GET /api/health` (includes `pamAvailable` / `terminalAvailable` /
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
-  `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
+  `processAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
-  `GET/PUT /api/docker/settings`, `GET /api/system/status`,
-  and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*` and
+  `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET /api/system/status`,
+  and the `/api/files/*`, `/api/editor/*`, `/api/docker/*`, `/api/services/*`, `/api/processes/*` and
   `/api/packages/*` groups described below;
   errors use ProblemDetails. Unmatched `/api/**` paths return a 404 ProblemDetails and never fall
   back to the SPA.
@@ -404,6 +410,48 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   atomically and raise `Changed`; every consumer (endpoints, `SystemctlCommandRunner`, health)
   reads `Current` per request, so nothing may cache `IOptions<ServiceOptions>` (that would make
   saves ineffective). `/api/health` exposes `serviceAvailable` from the same snapshot.
+- Process management (`api/Processes/`, `/api/processes/**`) reads Linux `/proc` directly from the
+  main process: `/proc/[pid]/stat` (state, ppid, utime/stime, threads, starttime, vsize, rss),
+  `/proc/[pid]/status` (`Uid`) and `/proc/[pid]/cmdline`. It never runs `ps` or any external
+  command, and user input never reaches a command line. `GET /api/processes` returns
+  `{processes,total,truncated,sampledAt,refreshIntervalSeconds}`; `GET /api/processes/{pid}`
+  adds executable path, working directory, `io` read/write bytes and the open-fd count (404 when
+  the process vanished); `POST /api/processes/{pid}/terminate?force=false` sends `SIGTERM` (or
+  `SIGKILL` with `force=true`) through `libc.kill(2)` and waits up to `TerminateTimeoutSeconds`,
+  returning `{ok,pid,signal,exited,waitedMilliseconds}`. A process that ignores `SIGTERM` stays
+  running and the endpoint returns 409 so the UI can confirm a forced kill; PID 1 and
+  `Environment.ProcessId` (Koi itself) are always refused with 409, and `ESRCH`/`EPERM` map to
+  404/403. `GET /api/processes/{pid}` and the terminate action share the same guard.
+- Process authorization mirrors services: every `/api/processes/**` endpoint requires a session
+  and membership in the configured `AllowedGroups` (default `["sudo","wheel"]`), resolved with
+  `id -nG -- <user>` so NSS/LDAP groups count; uid 0 always passes, even with an empty list. The
+  check order is Enabled(503) → Linux(503) → session(401) → account name(403) → root → group
+  list → membership(403); a failed `id` lookup is 503 (fail-closed). The settings endpoints are
+  the exception: `GET/PUT /api/processes/settings` only allow uid 0 (resolved through
+  `getpwnam_r`) and skip the Enabled/Linux checks so a broken configuration can be repaired;
+  non-root gets 403.
+- Process sampling: the singleton keeps the previous raw sample and computes CPU as
+  `Δ(utime+stime) / HZ / elapsed × 100`, where 100% is one core (a multithreaded process can
+  exceed 100%, like top/htop). A sample older than 30 seconds is not reused; the service then
+  takes an internal `SampleWindowMilliseconds` sample. Processes absent from the baseline use
+  their lifetime average so the first request is not all zeros. Snapshots are cached for 1
+  second, sorted by CPU usage, truncated to `MaxProcesses` (the response sets `truncated`), and
+  command lines are cut to `MaxCommandLineLength`. Memory percentage is `RssBytes / MemTotal`;
+  runtime is `uptime − starttime/HZ` (both from the kernel-boot clock — never add `btime`).
+  `/proc` read failures surface as 503 ProblemDetails.
+- Process settings are **not** read from `appsettings.json` (`Koi:Processes` is not a runtime
+  source): the `ProcessOptions` code defaults are `Enabled=true`,
+  `AllowedGroups=["sudo","wheel"]`, `MaxProcesses=2000`, `MaxCommandLineLength=512`,
+  `SampleWindowMilliseconds=200`, `TerminateTimeoutSeconds=5`, `RefreshIntervalSeconds=5`. They
+  are overridden by the SQLite generic settings table (`Feature = process`) through
+  `ProcessSettingsService`; on first start with no `process` row the code defaults are used
+  directly (no legacy migration, no seed row). PUT validates group names, `MaxProcesses`
+  100–20000, `MaxCommandLineLength` 64–4096, `SampleWindowMilliseconds` 50–5000,
+  `TerminateTimeoutSeconds` 1–60 and `RefreshIntervalSeconds` 1–60. Saves replace the `Current`
+  snapshot atomically and raise `Changed`; every consumer (endpoints, `ProcessService`) reads
+  `Current` per request, so nothing may cache `IOptions<ProcessOptions>`. The list response
+  carries `refreshIntervalSeconds` so non-root clients can poll with the administrator's
+  interval. `/api/health` exposes `processAvailable = OperatingSystem.IsLinux()`.
 - Application management (`api/Packages/`, `/api/packages/**`) runs apt, dnf, yum, pacman or
   zypper from the main process through `Process.Start` + `ArgumentList` — never a shell, never a
   fixed `sh -c` wrapper. `PackageManagerDetector` uses the `Manager` value from the settings
@@ -552,9 +600,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the seven modules mount in the sibling `.panels`
+  empty and `.el-tabs__content` is hidden; the eight modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
-  `docker` / `service` / `package`). `首页` is
+  `docker` / `service` / `process` / `package`). `首页` is
   the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
   a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
@@ -595,7 +643,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
   persistent alert with `重试` instead of a toast. Below it the module entries are split into two
   groups driven by the `MODULE_GROUPS` array in `HomeView.vue`: **系统管理** (terminal / files /
-  editor / service / package) and **软件管理** (docker). Each group renders a
+  editor / service / process / package) and **软件管理** (docker). Each group renders a
   `section.module-group` with an `h2.module-group-title` (3 px primary bar + 16 px text) above its
   `.modules` grid. Each entry is a lightweight tile: a 40 px Element Plus icon above the entry
   name, no border by default and a primary-tinted highlight with a slight lift on hover/focus. The
@@ -689,6 +737,30 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   MiB and converted to bytes) and the log tail default/max. `保存` sends `PUT
   /api/services/settings`, shows `设置已保存并立即生效`, and refreshes the list; saving
   `Enabled=false` therefore surfaces the existing 503 alert immediately.
+- The 进程管理 tab (`ui/src/views/ProcessView.vue`, workspace key `process`) lists processes from
+  `GET /api/processes` with PID, user, name, command line, state (mapped to Chinese labels),
+  CPU%, memory%, RSS, threads and runtime; a keyword filter matches PID / name / user / command
+  line and a user filter narrows the list. Table columns for PID, CPU%, memory%, RSS, threads and
+  runtime are locally sortable. Data refreshes automatically every `refreshIntervalSeconds` (from
+  the list response, default 5 s) **only** while the tab is active (`:active` from the workspace)
+  and `document.visibilityState === 'visible'`; tab switches and `visibilitychange` restart or
+  stop the interval, the timer and listener are cleaned up on unmount, automatic refreshes are
+  silent (no table loading mask) and the manual `刷新` button shows its own loading. A failed
+  request keeps the last snapshot and shows a persistent alert; 403 (not in an allowed group) and
+  503 (non-Linux or disabled) render as persistent alerts instead of toasts. Every row operation
+  lives in one `操作` dropdown: 详情 / 结束进程 / 强制结束; the terminate items are disabled for
+  PID 1. Both actions confirm first (forced termination warns about data loss), a 409 from the
+  graceful SIGTERM asks for a second confirmation and retries with `force=true`, and detail opens
+  a 640 px drawer fed by `GET /api/processes/{pid}` (executable, working directory, IO bytes,
+  open fds and the command line). The top-right toolbar carries a circular `设置` gear
+  (`Setting`, `aria-label="进程管理设置"`) **only to root**: on mount the page silently calls
+  `GET /api/processes/settings`; success shows the button, any failure (403 for non-root, 503 on
+  non-Linux) hides it without an error toast. The click opens a 480 px `el-drawer` editing every
+  `ProcessOptions` value — enable switch, allowed groups, max processes, command-line length,
+  sample window, terminate wait and refresh interval. `保存` sends `PUT /api/processes/settings`,
+  shows `设置已保存并立即生效`, and refreshes the list; saving `Enabled=false` surfaces the 503
+  alert immediately. The page also carries an `自动刷新` switch that pauses polling without
+  leaving the tab.
 - The 应用管理 tab (`ui/src/views/PackageView.vue`, workspace key `package`) has four inner tabs:
   已安装 / 安装 / 更新 / 软件源. It fetches the manager status on mount, loads each data tab on
   first activation, and the manual `刷新` button reloads the status plus the active tab.

@@ -8,6 +8,7 @@ using Koi.Api.Files;
 using Koi.Api.Hosting;
 using Koi.Api.Monitor;
 using Koi.Api.Packages;
+using Koi.Api.Processes;
 using Koi.Api.Services;
 using Koi.Api.Terminal;
 using Microsoft.AspNetCore.Http.Features;
@@ -73,6 +74,9 @@ builder.Services.AddSingleton<SystemMonitorService>();
 // 服务管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<ServiceSettingsService>();
 builder.Services.AddSingleton<SystemctlCommandRunner>();
+// 进程管理读取 /proc 完成采集，配置同样来自 SQLite 通用配置表（FeatureConfigs）。
+builder.Services.AddSingleton<ProcessSettingsService>();
+builder.Services.AddSingleton<ProcessService>();
 // 应用管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FeatureConfigStore>();
 builder.Services.AddSingleton<PackageSettingsService>();
@@ -153,6 +157,9 @@ await app.Services.GetRequiredService<ServiceSettingsService>().LoadAsync();
 // 容器管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Docker 节）。
 await app.Services.GetRequiredService<DockerSettingsService>().LoadAsync();
 
+// 进程管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Processes 节）。
+await app.Services.GetRequiredService<ProcessSettingsService>().LoadAsync();
+
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -188,6 +195,7 @@ app.MapGet("/api/health", (
     dockerAvailable = DockerCommandRunner.IsAvailable(dockerSettings.Current),
     systemMonitorAvailable = OperatingSystem.IsLinux(),
     serviceAvailable = SystemctlCommandRunner.IsAvailable(serviceSettings.Current),
+    processAvailable = OperatingSystem.IsLinux(),
     packageAvailable = packageResolver.Backend is not null,
     timestamp = DateTimeOffset.UtcNow,
 }));
@@ -199,6 +207,7 @@ app.MapEditorEndpoints();
 app.MapDockerEndpoints();
 app.MapSystemMonitorEndpoints();
 app.MapServiceEndpoints();
+app.MapProcessEndpoints();
 app.MapPackageEndpoints();
 
 // /api 未匹配返回 404 ProblemDetails，其余无扩展名路径回退前端 index.html。

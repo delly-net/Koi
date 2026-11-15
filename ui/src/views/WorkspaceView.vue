@@ -16,6 +16,7 @@ import FilesView from '@/views/FilesView.vue'
 import EditorView from '@/views/EditorView.vue'
 import DockerView from '@/views/DockerView.vue'
 import ServiceView from '@/views/ServiceView.vue'
+import ProcessView from '@/views/ProcessView.vue'
 import PackageView from '@/views/PackageView.vue'
 
 const router = useRouter()
@@ -99,6 +100,11 @@ async function handleLogout(): Promise<void> {
       <EditorView v-if="hasTab('editor')" v-show="activeKey === 'editor'" />
       <DockerView v-if="hasTab('docker')" v-show="activeKey === 'docker'" />
       <ServiceView v-if="hasTab('service')" v-show="activeKey === 'service'" />
+      <ProcessView
+        v-if="hasTab('process')"
+        v-show="activeKey === 'process'"
+        :active="activeKey === 'process'"
+      />
       <PackageView v-if="hasTab('package')" v-show="activeKey === 'package'" />
     </div>
   </div>
