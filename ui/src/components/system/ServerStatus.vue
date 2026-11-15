@@ -161,6 +161,14 @@ function progressColor(percentage: number): string {
     <el-skeleton v-if="!status && !error" :rows="4" animated />
 
     <template v-if="status">
+      <!-- 服务器名称、内核等信息先于实时指标展示，便于一眼确认目标主机。 -->
+      <div class="meta">
+        <span>服务器名称 {{ status.hostName }}</span>
+        <span>内核 {{ status.kernelVersion }}</span>
+        <span>运行 {{ formatUptime(status.uptimeSeconds) }}</span>
+        <span>进程 {{ status.processCount }}</span>
+      </div>
+
       <div class="status-grid">
         <el-card class="status-card" shadow="never">
           <template #header>
@@ -255,13 +263,6 @@ function progressColor(percentage: number): string {
             {{ formatBytes(status.network.sentTotalBytes) }}
           </p>
         </el-card>
-      </div>
-
-      <div class="meta">
-        <span>主机 {{ status.hostName }}</span>
-        <span>内核 {{ status.kernelVersion }}</span>
-        <span>运行 {{ formatUptime(status.uptimeSeconds) }}</span>
-        <span>进程 {{ status.processCount }}</span>
       </div>
     </template>
   </section>
@@ -402,7 +403,7 @@ function progressColor(percentage: number): string {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 20px;
-  margin-top: 12px;
+  margin-bottom: 12px;
   padding: 10px 16px;
   font-size: 12px;
   color: #606266;

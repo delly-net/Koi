@@ -494,9 +494,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   new terminal tabs only because already-open PTYs keep their settings; the drawer copy notes that
   settings live in the SQLite generic settings table.
 - The 首页 panel (`views/HomeView.vue`) receives `:active` from the workspace and no longer shows
-  the former “登录成功” `el-result` block. Its top is `components/system/ServerStatus.vue`: four
-  status cards (CPU usage/cores/load, memory + swap, per-mount disk usage, network receive/send
-  rates) plus a host/kernel/uptime/process row, refreshed every 5 seconds. Polling runs only while
+  the former “登录成功” `el-result` block. Its top is `components/system/ServerStatus.vue`: the
+  server-name/kernel/uptime/process row (`.meta`, labelled `服务器名称`) sits directly below the
+  panel title and *above* four status cards (CPU usage/cores/load, memory + swap, per-mount disk
+  usage, network receive/send rates), refreshed every 5 seconds. Polling runs only while
   the home tab is active *and* `document.visibilityState === 'visible'`; tab switches and
   `visibilitychange` restart/stop the interval and fetch immediately on becoming visible; timers
   and listeners are cleaned up on unmount. Refreshes are silent: `.status-grid` carries no
