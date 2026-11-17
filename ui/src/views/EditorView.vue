@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting } from '@element-plus/icons-vue'
 import { useEditorStore, type EditorTab } from '@/stores/editor'
-import { getEditorSettings, saveEditorSettings, type EditorSettings } from '@/api/editor'
-import { setTextExtensions } from '@/config/appConfig'
+import { getEditorSettings, saveEditorSettings, type EditorFileTypes } from '@/api/editor'
+import { resolveSyntaxScheme, setEditorFileTypes } from '@/config/appConfig'
+import {
+  SYNTAX_SCHEMES,
+  normalizeFileTypes,
+  type EditorFileType,
+} from '@/config/editorFileTypes'
 import { ApiError } from '@/api/http'
+
+// CodeMirror 及其语言包只随编辑器页签按需加载，避免进入首屏 bundle。
+const CodeEditor = defineAsyncComponent(() => import('@/components/editor/CodeEditor.vue'))
 
 const editor = useEditorStore()
 
@@ -31,6 +39,11 @@ function tabLabel(tab: EditorTab): string {
   }
 
   return isDirty(tab) ? `${tab.name} ●` : tab.name
+}
+
+/** Nginx 配置页签固定使用 Nginx 方案，其余按后缀规则匹配；未命中回退纯文本。 */
+function schemeFor(tab: EditorTab): string {
+  return tab.source === 'nginx' ? 'nginx' : resolveSyntaxScheme(tab.name)
 }
 
 function errorText(error: unknown): string {
@@ -168,13 +181,6 @@ async function closeTab(name: string | number): Promise<void> {
   editor.closeTab(key)
 }
 
-/** 保存快捷键：在编辑器区域按 Ctrl/Cmd+S。 */
-function onSaveShortcut(): void {
-  if (activeTab.value) {
-    void saveTab(activeTab.value)
-  }
-}
-
 function onBeforeUnload(event: BeforeUnloadEvent): void {
   if (editor.tabs.some((tab) => isDirty(tab))) {
     event.preventDefault()
@@ -187,13 +193,13 @@ const settingsAvailable = ref(false)
 const settingsVisible = ref(false)
 const settingsLoading = ref(false)
 const settingsSaving = ref(false)
-const settingsSnapshot = ref<EditorSettings | null>(null)
+const settingsSnapshot = ref<EditorFileTypes | null>(null)
 const settingsForm = reactive({
-  textExtensions: [] as string[],
+  fileTypes: [] as EditorFileType[],
 })
 
-function applySettingsForm(value: EditorSettings): void {
-  settingsForm.textExtensions = [...value.textExtensions]
+function applySettingsForm(value: EditorFileTypes): void {
+  settingsForm.fileTypes = value.fileTypes.map((item) => ({ ...item }))
 }
 
 /**
@@ -225,30 +231,31 @@ async function openSettings(): Promise<void> {
   }
 }
 
-/** 保存前规范化：去空白、转小写、去重、丢弃空项（后端仍会再次校验）。 */
-function normalizeRules(rules: string[]): string[] {
-  const result: string[] = []
-  for (const item of rules) {
-    const value = item.trim().toLowerCase()
-    if (value && !result.includes(value)) {
-      result.push(value)
-    }
-  }
+function addFileType(): void {
+  settingsForm.fileTypes.push({ extension: '', scheme: 'config' })
+}
 
-  return result
+function removeFileType(index: number): void {
+  settingsForm.fileTypes.splice(index, 1)
 }
 
 async function saveSettings(): Promise<void> {
+  if (settingsForm.fileTypes.some((item) => !item.extension.trim())) {
+    ElMessage.warning('请填写空的后缀名，或删除该行规则')
+    return
+  }
+
+  // 规范化：去空白、转小写、去重；后端仍会再次校验。
+  const fileTypes = normalizeFileTypes(settingsForm.fileTypes) ?? []
+
   settingsSaving.value = true
   try {
-    const saved = await saveEditorSettings({
-      textExtensions: normalizeRules(settingsForm.textExtensions),
-    })
+    const saved = await saveEditorSettings({ fileTypes })
     settingsSnapshot.value = saved
     applySettingsForm(saved)
 
-    // 立即应用到文件管理中的文本关联判断，无需刷新页面。
-    setTextExtensions(saved.textExtensions)
+    // 立即应用到文件管理的文本关联判断与编辑器着色，无需刷新页面。
+    setEditorFileTypes(saved.fileTypes)
     settingsVisible.value = false
     ElMessage.success('设置已保存并立即生效')
   } catch (error) {
@@ -266,11 +273,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
 </script>
 
 <template>
-  <div
-    class="editor-view"
-    @keydown.ctrl.s.prevent="onSaveShortcut"
-    @keydown.meta.s.prevent="onSaveShortcut"
-  >
+  <div class="editor-view">
     <div class="toolbar">
       <span class="title">文本编辑</span>
       <span v-if="activeTab" class="path" :title="activeTab.path">{{ activeTab.path }}</span>
@@ -341,14 +344,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
             title="正在读取文件…"
           />
 
-          <textarea
+          <CodeEditor
             v-else
             v-model="tab.content"
-            class="text-editor"
-            spellcheck="false"
-            autocapitalize="off"
-            autocomplete="off"
-          ></textarea>
+            class="editor-host"
+            :scheme="schemeFor(tab)"
+            :active="tab.key === editor.activeKey"
+            @save="saveTab(tab)"
+          />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -360,32 +363,46 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
       :close-on-click-modal="false"
     >
       <p class="settings-tip">
-        配置保存在 SQLite 通用配置表（功能标识 editor），保存后立即生效，无需重启服务。
+        配置保存在 SQLite 独立表（EditorFileTypes），保存后立即生效，无需重启服务。
       </p>
       <el-form label-position="top" class="settings-form">
-        <el-form-item label="文本文件扩展名">
-          <el-select
-            v-model="settingsForm.textExtensions"
-            class="full-width"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            :reserve-keyword="false"
-            placeholder="输入扩展名后按回车添加，如 .txt"
+        <el-form-item label="支持的文件后缀名与着色方案">
+          <el-table
+            :data="settingsForm.fileTypes"
+            size="small"
+            max-height="420"
+            class="file-type-table"
           >
-            <el-option
-              v-for="item in settingsForm.textExtensions"
-              :key="item"
-              :label="item"
-              :value="item"
-            />
-          </el-select>
+            <el-table-column label="后缀名" min-width="150">
+              <template #default="{ row }">
+                <el-input v-model="row.extension" size="small" placeholder="如 .json" />
+              </template>
+            </el-table-column>
+            <el-table-column label="着色方案" min-width="170">
+              <template #default="{ row }">
+                <el-select v-model="row.scheme" size="small" class="scheme-select">
+                  <el-option
+                    v-for="scheme in SYNTAX_SCHEMES"
+                    :key="scheme.id"
+                    :label="scheme.label"
+                    :value="scheme.id"
+                  />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="" width="56" align="center">
+              <template #default="{ $index }">
+                <el-button link type="danger" @click="removeFileType($index)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-button class="add-file-type" size="small" @click="addFileType">添加规则</el-button>
           <div class="form-hint">
-            这些规则决定「文件管理」中哪些文件可通过【打开】/【编辑文本】进入在线编辑。
-            不区分大小写；以 . 开头的规则按完整文件名或后缀匹配（如 .txt、.gitignore），
-            不带点的规则按完整文件名或 .规则 后缀匹配（如 dockerfile、makefile）。
-            留空表示不把任何文件视为文本。
+            每条规则同时决定「文件管理」中哪些文件可通过【打开】/【编辑文本】进入在线编辑，
+            以及编辑器使用的着色方案。不区分大小写；以 . 开头的规则按完整文件名或后缀匹配
+            （如 .txt、.gitignore），不带点的规则按完整文件名或 .规则 后缀匹配
+            （如 dockerfile、makefile）。未识别后缀使用纯文本方案；
+            Nginx 配置页签固定使用 Nginx 方案。留空表示不把任何文件视为文本。
           </div>
         </el-form-item>
       </el-form>
@@ -452,8 +469,16 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
   line-height: 1.6;
 }
 
-.full-width {
+.file-type-table {
   width: 100%;
+}
+
+.scheme-select {
+  width: 100%;
+}
+
+.add-file-type {
+  margin-top: 8px;
 }
 
 .form-hint {
@@ -502,21 +527,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
   overflow: hidden;
 }
 
-.text-editor {
+.editor-host {
   flex: 1;
-  width: 100%;
   min-height: 0;
-  padding: 10px 12px;
-  border: none;
-  outline: none;
-  resize: none;
-  background: #ffffff;
-  color: #1f2329;
-  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  tab-size: 4;
-  white-space: pre;
-  overflow: auto;
 }
 </style>

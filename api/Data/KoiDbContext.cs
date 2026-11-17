@@ -11,6 +11,8 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
 
     public DbSet<PackageCacheEntity> PackageCacheItems => Set<PackageCacheEntity>();
 
+    public DbSet<EditorFileTypeEntity> EditorFileTypes => Set<EditorFileTypeEntity>();
+
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
         base.ConfigureConventions(configurationBuilder);
@@ -45,6 +47,14 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
             entity.ToTable("PackageCacheItems");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.Name).IsUnique();
+        });
+
+        // 文本编辑后缀规则：后缀唯一，保存时整表替换。
+        modelBuilder.Entity<EditorFileTypeEntity>(entity =>
+        {
+            entity.ToTable("EditorFileTypes");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.Extension).IsUnique();
         });
     }
 }

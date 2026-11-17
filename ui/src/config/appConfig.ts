@@ -1,10 +1,17 @@
 import { ref } from 'vue'
+import {
+  DEFAULT_EDITOR_FILE_TYPES,
+  DEFAULT_SCHEME,
+  findFileTypeRule,
+  normalizeFileTypes,
+  type EditorFileType,
+} from './editorFileTypes'
 
 /**
  * 应用运行时配置：由 public/conf/setting.json 提供，构建后可直接修改以切换后端地址，
  * 无需重新构建前端。配置在 main.ts 中先于路由安装加载。
  *
- * 文本文件关联规则已改为由后端 SQLite 配置（Feature = editor）维护，
+ * 文本文件关联规则与着色方案已改为由后端 SQLite 独立表 EditorFileTypes 维护，
  * setting.json 中的 fileAssociations.text 不再读取。
  */
 export interface AppConfig {
@@ -19,75 +26,12 @@ const DEFAULT_BACKEND_ROOT = ''
 /** 后端业务端点统一前缀（与 api/auth.ts 中的请求路径一致）。 */
 const API_PREFIX = '/api'
 
-/**
- * 内置文本关联规则：后端 /api/editor/associations 不可用或返回非法内容时的兜底值。
- * 与后端 EditorOptions.DefaultTextExtensions 保持一致。
- */
-const DEFAULT_TEXT_EXTENSIONS = [
-  '.txt',
-  '.md',
-  '.markdown',
-  '.log',
-  '.csv',
-  '.tsv',
-  '.json',
-  '.jsonc',
-  '.xml',
-  '.yml',
-  '.yaml',
-  '.ini',
-  '.conf',
-  '.cfg',
-  '.properties',
-  '.toml',
-  '.env',
-  '.sh',
-  '.bash',
-  '.zsh',
-  '.fish',
-  '.py',
-  '.js',
-  '.mjs',
-  '.cjs',
-  '.jsx',
-  '.ts',
-  '.tsx',
-  '.vue',
-  '.html',
-  '.htm',
-  '.css',
-  '.scss',
-  '.less',
-  '.sql',
-  '.java',
-  '.c',
-  '.h',
-  '.cpp',
-  '.hpp',
-  '.cs',
-  '.go',
-  '.rs',
-  '.php',
-  '.rb',
-  '.pl',
-  '.lua',
-  '.service',
-  '.timer',
-  '.desktop',
-  '.dockerfile',
-  '.gitignore',
-  '.gitattributes',
-  '.editorconfig',
-  'dockerfile',
-  'makefile',
-]
-
 let backendRoot = DEFAULT_BACKEND_ROOT
 /**
- * 当前生效的文本关联规则。使用 ref 保存，文件管理模板中的 isTextFile()
- * 会随 root 保存扩展名设置而响应式刷新。
+ * 当前生效的后缀规则（后缀 + 着色方案）。使用 ref 保存，文件管理模板中的 isTextFile()
+ * 与编辑器的着色方案都会随 root 保存设置而响应式刷新。
  */
-const textExtensions = ref<string[]>([...DEFAULT_TEXT_EXTENSIONS])
+const fileTypes = ref<EditorFileType[]>(DEFAULT_EDITOR_FILE_TYPES.map((item) => ({ ...item })))
 
 /**
  * 归一化后端根地址，统一为「不含 /api 的根地址」：
@@ -124,36 +68,15 @@ export function getBackendRoot(): string {
   return backendRoot
 }
 
-/** 当前生效的文本文件关联规则（副本，避免调用方修改内部状态）。 */
-export function getTextExtensions(): string[] {
-  return [...textExtensions.value]
+/** 当前生效的后缀规则（副本，避免调用方修改内部状态）。 */
+export function getEditorFileTypes(): EditorFileType[] {
+  return fileTypes.value.map((item) => ({ ...item }))
 }
 
-/** 规范化文件关联规则：去空白、转小写、去重；非数组返回 null。 */
-export function normalizeExtensions(raw: unknown): string[] | null {
-  if (!Array.isArray(raw)) {
-    return null
-  }
-
-  const result: string[] = []
-  for (const item of raw) {
-    if (typeof item !== 'string') {
-      continue
-    }
-
-    const value = item.trim().toLowerCase()
-    if (value && !result.includes(value)) {
-      result.push(value)
-    }
-  }
-
-  return result
-}
-
-/** 应用文本文件关联规则（空数组表示不把任何文件视为文本）。 */
-export function setTextExtensions(rules: string[]): void {
-  textExtensions.value = [...rules]
-  console.info(`[配置] 文本文件关联：${textExtensions.value.length} 条规则`)
+/** 应用后缀规则（空数组表示不把任何文件视为文本，编辑器也没有可着色的后缀）。 */
+export function setEditorFileTypes(rules: EditorFileType[]): void {
+  fileTypes.value = normalizeFileTypes(rules) ?? []
+  console.info(`[配置] 文本编辑后缀规则：${fileTypes.value.length} 条`)
 }
 
 /**
@@ -162,18 +85,15 @@ export function setTextExtensions(rules: string[]): void {
  * 其余规则按「完整文件名或 `.<规则>` 后缀」匹配（支持 `dockerfile`、`makefile`）。
  */
 export function isTextFile(nameOrPath: string): boolean {
-  const name = nameOrPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? ''
-  if (!name) {
-    return false
-  }
+  return findFileTypeRule(nameOrPath, fileTypes.value) !== undefined
+}
 
-  return textExtensions.value.some((rule) => {
-    if (rule.startsWith('.')) {
-      return name === rule || name.endsWith(rule)
-    }
-
-    return name === rule || name.endsWith(`.${rule}`)
-  })
+/**
+ * 取文件名对应的着色方案；未命中任何后缀规则时回退纯文本。
+ * Nginx 配置页签由调用方（EditorView）强制使用 `nginx` 方案。
+ */
+export function resolveSyntaxScheme(nameOrPath: string): string {
+  return findFileTypeRule(nameOrPath, fileTypes.value)?.scheme ?? DEFAULT_SCHEME
 }
 
 /** 统一拼接请求地址：绝对 URL 原样返回，其余路径前置后端根地址。 */

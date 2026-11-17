@@ -50,5 +50,21 @@ public static class KoiDbSchema
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_PackageCacheItems_Name"
             ON "PackageCacheItems" ("Name");
             """);
+
+        // 文本编辑支持的后缀名与着色方案；时间列由 UtcTicksConverter 存为 INTEGER（UTC ticks）。
+        db.Database.ExecuteSqlRaw("""
+            CREATE TABLE IF NOT EXISTS "EditorFileTypes" (
+                "Id" INTEGER NOT NULL CONSTRAINT "PK_EditorFileTypes" PRIMARY KEY AUTOINCREMENT,
+                "Extension" TEXT NOT NULL,
+                "Scheme" TEXT NOT NULL,
+                "UpdatedAt" INTEGER NOT NULL,
+                "UpdatedBy" TEXT NULL
+            );
+            """);
+
+        db.Database.ExecuteSqlRaw("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_EditorFileTypes_Extension"
+            ON "EditorFileTypes" ("Extension");
+            """);
     }
 }

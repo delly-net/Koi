@@ -21,9 +21,10 @@ are implemented.
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST (file settings stored in the SQLite generic settings table and edited by
-  root through a settings drawer), text-association settings that decide which files the file
-  manager opens in the editor (also stored in the SQLite settings table, edited by root from the
-  text editor page), docker-CLI-backed container/image management restricted to configured
+  root through a settings drawer), editor file-type settings that decide which files the file
+  manager opens in the editor and which syntax-highlighting scheme each suffix uses (stored in the
+  dedicated SQLite `EditorFileTypes` table, edited by root from the text editor page),
+  docker-CLI-backed container/image management restricted to configured
   groups, with its settings stored in the SQLite settings table and edited by root through a
   settings drawer, systemctl-backed service management (list/detail/lifecycle/enablement/journalctl logs)
   restricted to configured groups, with its settings stored in the SQLite settings table and
@@ -41,8 +42,9 @@ are implemented.
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a multi-tab text editor page with a
-  root-only extension settings drawer, a container manager page, a systemd service manager page, a
+  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a
+  CodeMirror-based multi-tab text editor page with per-suffix syntax highlighting and a root-only
+  suffix/scheme settings drawer, a container manager page, a systemd service manager page, a
   process manager page with a root-only settings drawer and visible-only polling, an application
   manager page with a live job-log dialog, an Nginx manager page that opens conf.d files in the
   text editor and offers detection/hot-reload actions, and a homepage server-status panel refreshed every 5 seconds.
@@ -94,8 +96,8 @@ generic settings table (`Feature = files`).
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, settings service/validator, file helper process, operation service,
   REST endpoints),
-  `Editor/` (text-association options, settings service/validator, read-only associations and
-  root-only settings endpoints),
+  `Editor/` (syntax-scheme definitions, file-type service/validator over the `EditorFileTypes`
+  table, read-only associations and root-only settings endpoints),
   `Docker/` (docker CLI runner, group authorization guard, settings service/validator, REST
   endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, settings
@@ -110,11 +112,13 @@ generic settings table (`Feature = files`).
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
   editor association/settings API, docker API, service API, process API, nginx API and package API
   types), `src/config/`
-  (runtime config and the reactive text-association rules), `src/stores/` (Pinia auth, workspace
-  tab, editor tab, file clipboard and terminal-tab request state), `src/router/`,
+  (runtime config, syntax-scheme ids/defaults and the reactive file-type rules), `src/stores/`
+  (Pinia auth, workspace tab, editor tab, file clipboard and terminal-tab request state),
+  `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
   service / process / nginx / package panels),
-  `src/components/terminal/` (xterm.js pane), `src/components/files/` (per-directory
+  `src/components/terminal/` (xterm.js pane), `src/components/editor/` (`CodeEditor.vue`
+  CodeMirror wrapper and the scheme→language mapping), `src/components/files/` (per-directory
   `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
 - `icon/` — application icons (48 / 256 / full size).
@@ -308,24 +312,40 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   512 MiB ceiling plus 1 MiB overhead; the per-request limit is the current `MaxUploadBytes`, so
   raising it within the ceiling needs no restart. Uploads are written to a temp file in the
   destination directory and renamed into place, so an interrupted upload leaves no partial target.
-- Text-association settings (which files the file manager treats as text and opens in the editor)
-  are **not** read from `appsettings.json` or from the frontend `conf/setting.json`: the runtime
-  source is the SQLite generic settings table (`Feature = editor`) through `EditorSettingsService`,
-  and the option set is a single `TextExtensions` string array (0–500 rules, each 1–64 characters,
-  no path separators, wildcards, whitespace or control characters; lowercase, de-duplicated).
-  `EditorOptions.DefaultTextExtensions` is the seed/fallback and must stay in sync with the
-  frontend `DEFAULT_TEXT_EXTENSIONS`. An empty array is valid and means “no text files”.
-  `GET /api/editor/associations` requires a session and is readable by every signed-in account
-  (no platform/enabled check) so the file manager can always classify entries;
-  `GET/PUT /api/editor/settings` require uid 0 (resolved through `getpwnam_r`, non-root → 403),
-  deliberately skip platform/`Enabled` checks so a broken configuration can be repaired, validate
-  the payload server-side and return the saved object. Saves replace the `Current` snapshot
-  atomically and raise `Changed`; never cache `IOptions<EditorOptions>`.
+- Editor file-type settings (which files the file manager treats as text and opens in the editor,
+  plus the syntax-highlighting scheme used for each suffix) are **not** read from
+  `appsettings.json` or from the frontend `conf/setting.json`: the runtime source is the dedicated
+  SQLite table `EditorFileTypes` (`api/Data/EditorFileTypeEntity.cs`: `Id`, unique `Extension`,
+  `Scheme`, `UpdatedAt`, `UpdatedBy`) through `EditorFileTypeService`. This table replaced the
+  former `FeatureConfigs(Feature = editor)` `TextExtensions` array and is the single source for
+  both text association and highlighting. Each row is one literal rule (0–500 rows, extension
+  1–64 characters, no path separators, wildcards, whitespace or control characters; lowercase,
+  de-duplicated) plus a scheme id from the fixed whitelist
+  `plaintext` / `config` / `json` / `yaml` / `xml` / `shell` / `nginx` / `systemd` /
+  `dockerfile` / `env` (see `EditorSyntaxSchemes`; ids must match the frontend
+  `SYNTAX_SCHEMES` in `ui/src/config/editorFileTypes.ts`). `EditorSyntaxSchemes.DefaultExtensions`
+  and `DefaultSchemeFor` are the seed/fallback and must stay in sync with the frontend
+  `DEFAULT_EDITOR_FILE_TYPES`. An empty list is valid and means “no text files”.
+  On first start with an empty table and no migration marker,
+  `EditorFileTypeService.LoadAsync` migrates the legacy `Feature = editor` row's `textExtensions`
+  (preserving user edits, including an empty array) or seeds the built-in defaults, then writes a
+  marker row `FeatureConfigs(Feature = editor-file-types)` so a deliberately emptied table is not
+  re-seeded on restart; after migration the old `editor` row is ignored. Rows may be empty on a
+  database where the user cleared everything. `GET /api/editor/associations` requires a session
+  and is readable by every signed-in account (no platform/enabled check) so the file manager can
+  always classify entries; `GET/PUT /api/editor/settings` require uid 0 (resolved through
+  `getpwnam_r`, non-root → 403), deliberately skip platform/`Enabled` checks so a broken
+  configuration can be repaired, validate the payload server-side and return
+  `{fileTypes:[{extension,scheme}]}`; an invalid scheme or rule is 400 and nothing is saved.
+  Saves replace the whole table in one `SaveChanges` and publish a new `Current` snapshot that
+  raises `Changed`; endpoints read `Current` per request, so nothing may cache options.
   A matching rule is literal: rules starting with `.` match the complete file name or a suffix
   (`.txt`, `.gitignore`), other rules match the complete name or a `.<rule>` suffix
-  (`dockerfile`, `makefile`). Frontend rules are reactive (`appConfig.ts` holds them in a `ref`),
-  so a root save immediately re-renders open file-manager tabs; other browsers pick the change up
-  on refresh or login because `loadEditorAssociations()` runs after session restore/login.
+  (`dockerfile`, `makefile`). Frontend rules are reactive (`appConfig.ts` holds the list in a
+  `ref`), so a root save immediately re-renders open file-manager tabs and open editor tabs
+  re-highlight; other browsers pick the change up on refresh or login because
+  `loadEditorAssociations()` runs after session restore/login. Nginx config tabs force the
+  `nginx` scheme regardless of the `.conf` default (`config`).
 - File helper framing has two separate limits: requests (main → helper) are capped at 64 KiB,
   responses (helper → main) at 32 MiB because a directory listing carries every entry in one JSON
   frame. Never stop reading a frame without terminating the helper: if the parent rejects an
@@ -657,8 +677,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers. Since
   `EnsureCreated` does not add tables to an existing database, `KoiDbSchema.EnsureCompatibilityTables`
   runs idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS` for the
-  generic settings table and the `PackageCacheItems` installed-app cache after `EnsureCreated`;
-  keep its DDL in sync with the EF model (or replace it with EF migrations).
+  generic settings table, the `PackageCacheItems` installed-app cache and the `EditorFileTypes`
+  editor suffix rules after `EnsureCreated`; keep its DDL in sync with the EF model (or replace it
+  with EF migrations).
 - Generic feature settings live in `FeatureConfigs` (`api/Data/FeatureConfigEntity.cs`):
   `Id`, `Feature` (unique, e.g. `packages`), `ConfigJson`, `UpdatedAt`, `UpdatedBy`. Each
   feature owns one JSON row, so future modules can reuse the table and `FeatureConfigStore`
@@ -742,10 +763,10 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `ui/dist/conf/setting.json` to retarget the backend without rebuilding. When the backend serves
   the SPA, this file is deliberately sent with `no-store` so edits take effect immediately.
   The former `fileAssociations.text` field is **deprecated and no longer read**: text associations
-  now come from the backend SQLite settings (`Feature = editor`) and are maintained by root in the
-  text editor page (see the text-association bullet above). Files matching a rule open in the
-  editor from the row menu `打开` / `编辑文本` or by clicking the name. The field may remain in
-  existing `setting.json` files but has no effect. Production deploys replace
+  and highlighting schemes now come from the backend SQLite table `EditorFileTypes` and are
+  maintained by root in the text editor page (see the editor file-type bullet above). Files
+  matching a rule open in the editor from the row menu `打开` / `编辑文本` or by clicking the name.
+  The field may remain in existing `setting.json` files but has no effect. Production deploys replace
   `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
 - Login page persistence (`ui/src/views/LoginView.vue` + `ui/src/utils/rememberedLogin.ts`): after a
   successful login the user name is always stored in `localStorage['koi.login.lastUserName']` and
@@ -767,14 +788,27 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   (`files:<path>` or `nginx:<name>`) and a `source`; file-manager entries use `openFile()` and the
   files API, while Nginx configs use `openNginxConfig()` and `/api/nginx/configs/{name}` through
   `readTabContent()` / `saveTabContent()`. Nginx tabs show an `Nginx 配置` tag in the toolbar. The
-  editor is a plain monospace textarea (no new npm dependency); large files near
-  `MaxTextFileBytes` may feel slow. Its
+  editing surface is `components/editor/CodeEditor.vue`, a CodeMirror 6 wrapper loaded through
+  `defineAsyncComponent` so the CodeMirror chunk (and `components/editor/languages.ts`) loads only
+  when the editor tab is first opened. The component keeps an `EditorView` per tab, syncs doc
+  changes through `v-model` to `tab.content`, reconfigure the language `Compartment` when the tab's
+  scheme changes, and calls `requestMeasure()` when the tab becomes active because `el-tabs` hides
+  inactive panes with `display:none`. Ctrl/Cmd+S is handled by a CodeMirror keymap that emits
+  `save` (there is no page-level keydown listener, to avoid double saves). The scheme is
+  `nginx` for `source='nginx'` tabs and otherwise `resolveSyntaxScheme(tab.name)`; unmatched names
+  fall back to `plaintext`. Large files near `MaxTextFileBytes` may feel slow on first render. Its
   top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="文本编辑设置"`)
   **only to root**: on mount the page silently calls `GET /api/editor/settings`; success shows the
   button, any failure (403 for non-root, 503 on non-Linux) hides it without an error toast. The
-  click opens a 480 px `el-drawer` editing `TextExtensions` as a multi-select/creatable tag list;
-  `保存` sends `PUT /api/editor/settings`, shows `设置已保存并立即生效`, and applies the returned
-  rules through `setTextExtensions()` so open file-manager tabs re-render immediately.
+  click opens a 480 px `el-drawer` whose table edits each suffix row (`后缀名` + `着色方案`
+  select) with `添加规则` / `删除`; an empty extension row blocks saving with a warning.
+  `保存` sends `PUT /api/editor/settings` as `{fileTypes:[{extension,scheme}]}`, shows
+  `设置已保存并立即生效`, and applies the returned rules through `setEditorFileTypes()` so open
+  file-manager tabs re-render and open editor tabs re-highlight immediately.
+  CodeMirror packages (`codemirror`, `@codemirror/{state,view,language}`, `@codemirror/lang-json`,
+  `@codemirror/lang-yaml`, `@codemirror/lang-xml`, `@codemirror/legacy-modes`) are the only new
+  npm dependencies; the `config`/`systemd`/`env` schemes use the legacy Properties mode,
+  `shell`/`nginx`/`dockerfile` the matching legacy modes.
 - The 容器管理 tab (`ui/src/views/DockerView.vue`, workspace key `docker`) has three inner tabs:
   容器 / 镜像 / 系统. Data is fetched on mount and only on the manual `刷新` button — there is no
   polling timer; refreshing reloads the status plus the visible inner tab. Container rows collapse

@@ -66,8 +66,8 @@ builder.Services.AddSingleton<TerminalSessionManager>();
 // 文件管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FileSettingsService>();
 builder.Services.AddSingleton<FileOperationService>();
-// 文本编辑配置（文本关联扩展名）同样来自 SQLite 通用配置表（FeatureConfigs）。
-builder.Services.AddSingleton<EditorSettingsService>();
+// 文本编辑后缀名与着色方案来自 SQLite 独立表 EditorFileTypes（替代旧的 FeatureConfigs 文本扩展名）。
+builder.Services.AddSingleton<EditorFileTypeService>();
 // 容器管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<DockerSettingsService>();
 builder.Services.AddSingleton<DockerCommandRunner>();
@@ -153,8 +153,8 @@ await app.Services.GetRequiredService<TerminalSettingsService>().LoadAsync();
 // 文件管理配置在启动时加载；数据库无记录时把旧 Koi:Files 节一次性迁移进来。
 await app.Services.GetRequiredService<FileSettingsService>().LoadAsync();
 
-// 文本编辑配置在启动时加载；数据库无记录时写入内置默认扩展名规则。
-await app.Services.GetRequiredService<EditorSettingsService>().LoadAsync();
+// 文本编辑后缀规则在启动时加载；表为空且未迁移时迁移旧配置或写入内置默认规则。
+await app.Services.GetRequiredService<EditorFileTypeService>().LoadAsync();
 
 // 服务管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Services 节）。
 await app.Services.GetRequiredService<ServiceSettingsService>().LoadAsync();
