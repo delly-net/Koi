@@ -101,7 +101,10 @@ export interface DockerImage {
   digest: string
   createdAt: string
   size: string
-  containers: string
+  /** 引用该镜像的容器数量（包含运行中和已停止容器）。 */
+  containerCount: number
+  /** 是否有容器引用该镜像（containerCount > 0）。 */
+  inUse: boolean
 }
 
 export interface DockerActionResponse {

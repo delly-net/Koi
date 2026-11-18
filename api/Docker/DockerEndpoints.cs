@@ -455,14 +455,142 @@ public static class DockerEndpoints
             return ToResult(result, "加载镜像列表");
         }
 
-        return Results.Ok(items.Select(item => new DockerImageSummary(
+        var images = items.Select(item => new DockerImageSummary(
             Id: GetString(item, "ID"),
             Repository: GetString(item, "Repository"),
             Tag: GetString(item, "Tag"),
             Digest: GetString(item, "Digest"),
             CreatedAt: GetString(item, "CreatedAt"),
             Size: GetString(item, "Size"),
-            Containers: GetString(item, "Containers"))).ToArray());
+            ContainerCount: 0,
+            InUse: false)).ToArray();
+
+        // docker images 的 .Containers 在现代 Docker 中固定输出 N/A，改由容器列表反推引用关系；
+        // 包含已停止容器，因为停止的容器同样会阻止镜像删除。
+        var (containersResult, containers) = await runner.RunJsonLinesAsync(
+            ["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+            CommandTimeout(settings),
+            MaxOutput(settings),
+            cancellationToken);
+        if (!containersResult.Ok)
+        {
+            return ToResult(containersResult, "读取容器引用");
+        }
+
+        var counts = CountContainersByImage(images, containers);
+        return Results.Ok(images.Select(image =>
+        {
+            var count = counts.GetValueOrDefault(NormalizeImageId(image.Id));
+            return image with { ContainerCount = count, InUse = count > 0 };
+        }).ToArray());
+    }
+
+    /// <summary>按镜像 ID 统计引用它的容器数量（运行中和已停止容器均计入）。</summary>
+    private static Dictionary<string, int> CountContainersByImage(
+        IReadOnlyList<DockerImageSummary> images,
+        IReadOnlyList<JsonElement> containers)
+    {
+        // 同一镜像 ID 可能对应多个仓库标签；引用关系按镜像 ID 归并，与 docker rmi <id> 的语义一致。
+        var references = new Dictionary<string, string>(StringComparer.Ordinal);
+        var imageIds = new List<string>();
+
+        foreach (var image in images)
+        {
+            var id = NormalizeImageId(image.Id);
+            if (id.Length == 0)
+            {
+                continue;
+            }
+
+            imageIds.Add(id);
+
+            if (IsConcreteImagePart(image.Repository) && IsConcreteImagePart(image.Tag))
+            {
+                references.TryAdd($"{image.Repository}:{image.Tag}", id);
+            }
+
+            if (IsConcreteImagePart(image.Digest))
+            {
+                references.TryAdd(image.Digest, id);
+            }
+        }
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var container in containers)
+        {
+            var id = ResolveImageId(GetString(container, "Image"), references, imageIds);
+            if (id is not null)
+            {
+                counts[id] = counts.GetValueOrDefault(id) + 1;
+            }
+        }
+
+        return counts;
+    }
+
+    /// <summary>把容器的 <c>Image</c> 引用解析为镜像列表中的镜像 ID。</summary>
+    private static string? ResolveImageId(
+        string reference,
+        IReadOnlyDictionary<string, string> references,
+        IReadOnlyList<string> imageIds)
+    {
+        var text = reference.Trim();
+        if (text.Length == 0)
+        {
+            return null;
+        }
+
+        if (references.TryGetValue(text, out var mapped))
+        {
+            return mapped;
+        }
+
+        // docker run nginx 会把容器镜像记录为 nginx，而镜像列表展示 nginx:latest。
+        if (!HasTagOrDigest(text) && references.TryGetValue($"{text}:latest", out mapped))
+        {
+            return mapped;
+        }
+
+        // 容器可能以镜像 ID 运行，或原标签已被删除而退化为 ID 引用。
+        var hash = text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+            ? text["sha256:".Length..]
+            : text;
+        if (hash.Length is < 6 or > 64 || !hash.All(char.IsAsciiHexDigit))
+        {
+            return null;
+        }
+
+        foreach (var id in imageIds)
+        {
+            if (id.StartsWith(hash, StringComparison.OrdinalIgnoreCase) ||
+                hash.StartsWith(id, StringComparison.OrdinalIgnoreCase))
+            {
+                return id;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeImageId(string id)
+    {
+        var text = id.Trim();
+        return text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+            ? text["sha256:".Length..]
+            : text;
+    }
+
+    private static bool IsConcreteImagePart(string value) =>
+        value.Length > 0 && value != "<none>";
+
+    private static bool HasTagOrDigest(string reference)
+    {
+        if (reference.Contains('@'))
+        {
+            return true;
+        }
+
+        return reference.LastIndexOf(':') > reference.LastIndexOf('/');
     }
 
     /// <summary>拉取镜像；使用 <c>--quiet</c> 抑制逐层进度输出，避免输出超限。</summary>
@@ -1054,7 +1182,8 @@ public sealed record DockerImageSummary(
     string Digest,
     string CreatedAt,
     string Size,
-    string Containers);
+    int ContainerCount,
+    bool InUse);
 
 public sealed record DockerPullRequest(string? Reference);
 

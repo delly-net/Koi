@@ -388,8 +388,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   (referenced by multiple repositories, used by a running container, used by a stopped
   container); forced deletion removes every repository tag of that image, and an image used by a
   running container cannot be removed even with `-f`. `docker logs` is a snapshot bounded by
-  `LogTailDefault`/`LogTailMax`, and pull runs with `--quiet`.
-  `POST /images/tag` runs `docker tag` only after `docker image inspect` confirms the target
+  `LogTailDefault`/`LogTailMax`, and pull runs with `--quiet`. `GET /images` items carry
+  `containerCount` (number of containers using that image) and `inUse` (`containerCount > 0`).
+  They are derived from one `docker ps -a --no-trunc --format '{{json .}}'` call, not from the
+  `docker images` `.Containers` field, which modern Docker emits as `N/A`; the count includes
+  stopped containers (they also block image removal), is keyed by image ID (all repo/tag rows of
+  the same ID share the count), and matches container image references by `repo:tag`, digest, or
+  hex ID prefix. The image table shows a `容器引用` column (`被引用 (N)` / `未引用`), and the
+  image list + container list are two independent commands, so the flag is a UI hint; deletion is
+  still decided by the backend's 409 conflict. `POST /images/tag` runs `docker tag` only after
+  `docker image inspect` confirms the target
   reference does not exist; an existing target (even one pointing at the same image) is rejected
   with 409 and has no force path, so the user must remove the old tag first. The source is
   normally the image ID, which also lets `<none>` rows be tagged, and only local references are

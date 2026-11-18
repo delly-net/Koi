@@ -850,6 +850,22 @@ onMounted(() => {
             >
               <el-table-column prop="repository" label="仓库" min-width="220" show-overflow-tooltip />
               <el-table-column prop="tag" label="标签" width="130" />
+              <el-table-column label="容器引用" width="120" align="center">
+                <template #default="{ row }">
+                  <el-tooltip
+                    :content="
+                      row.inUse
+                        ? `有 ${row.containerCount} 个容器（含已停止）正在使用该镜像`
+                        : '没有运行中或已停止的容器使用该镜像'
+                    "
+                    placement="top"
+                  >
+                    <el-tag :type="row.inUse ? 'warning' : 'info'" size="small" effect="plain">
+                      {{ row.inUse ? `被引用 (${row.containerCount})` : '未引用' }}
+                    </el-tag>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
               <el-table-column label="镜像 ID" width="150">
                 <template #default="{ row }">{{ shortId(row.id.replace('sha256:', '')) }}</template>
               </el-table-column>
