@@ -26,6 +26,25 @@ export interface FileRootsResponse {
   roots: string[]
 }
 
+/** 快速访问目录；按登录账号隔离，列表只是导航快捷方式，不构成权限授予。 */
+export interface FileQuickAccessItem {
+  id: number
+  path: string
+  /** 显示名称：路径最后一段，根目录为 /。 */
+  name: string
+}
+
+export interface FileQuickAccessListResponse {
+  items: FileQuickAccessItem[]
+}
+
+export interface FileQuickAccessAddResponse {
+  ok: boolean
+  /** false 表示该目录已在列表中，未重复添加。 */
+  created: boolean
+  item: FileQuickAccessItem
+}
+
 export interface FileMutationResponse {
   ok: boolean
 }
@@ -89,6 +108,26 @@ export function saveFileSettings(payload: FileSettings): Promise<FileSettings> {
   return request<FileSettings>('/api/files/settings', {
     method: 'PUT',
     body: JSON.stringify(payload),
+  })
+}
+
+/** 读取当前账号的快速访问目录列表。 */
+export function getFileQuickAccess(): Promise<FileQuickAccessListResponse> {
+  return request<FileQuickAccessListResponse>('/api/files/quick-access')
+}
+
+/** 把目录加入当前账号的快速访问列表；重复添加幂等返回既有条目。 */
+export function addFileQuickAccess(path: string): Promise<FileQuickAccessAddResponse> {
+  return request<FileQuickAccessAddResponse>('/api/files/quick-access', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+}
+
+/** 移除当前账号的一条快速访问记录。 */
+export function removeFileQuickAccess(id: number): Promise<FileMutationResponse> {
+  return request<FileMutationResponse>(`/api/files/quick-access/${id}`, {
+    method: 'DELETE',
   })
 }
 

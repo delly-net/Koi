@@ -13,6 +13,8 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
 
     public DbSet<EditorFileTypeEntity> EditorFileTypes => Set<EditorFileTypeEntity>();
 
+    public DbSet<FileQuickAccessEntity> FileQuickAccess => Set<FileQuickAccessEntity>();
+
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
         base.ConfigureConventions(configurationBuilder);
@@ -55,6 +57,14 @@ public class KoiDbContext(DbContextOptions<KoiDbContext> options) : DbContext(op
             entity.ToTable("EditorFileTypes");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.Extension).IsUnique();
+        });
+
+        // 文件管理快速访问目录：按账号隔离，同一账号内目录唯一。
+        modelBuilder.Entity<FileQuickAccessEntity>(entity =>
+        {
+            entity.ToTable("FileQuickAccess");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => new { x.UserName, x.Path }).IsUnique();
         });
     }
 }

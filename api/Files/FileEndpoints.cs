@@ -23,6 +23,10 @@ public static class FileEndpoints
         group.MapGet("/roots", GetRoots);
         group.MapGet("/settings", GetSettings);
         group.MapPut("/settings", SaveSettingsAsync);
+        // 快速访问目录：按登录账号隔离，任何账号都可维护自己的一份列表。
+        group.MapGet("/quick-access", ListQuickAccessAsync);
+        group.MapPost("/quick-access", AddQuickAccessAsync);
+        group.MapDelete("/quick-access/{id:long}", RemoveQuickAccessAsync);
         group.MapGet("/list", ListAsync);
         group.MapPost("/mkdir", MakeDirectoryAsync);
         group.MapPost("/touch", CreateFileAsync);
@@ -116,6 +120,88 @@ public static class FileEndpoints
         }
 
         return null;
+    }
+
+    /// <summary>列出当前账号的快速访问目录。</summary>
+    private static async Task<IResult> ListQuickAccessAsync(
+        HttpContext context,
+        FileSettingsService settingsService,
+        FileQuickAccessService quickAccess,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        var items = await quickAccess.ListAsync(identity!.UserName, cancellationToken);
+        return Results.Ok(new FileQuickAccessListResponse(items));
+    }
+
+    /// <summary>把目录加入当前账号的快速访问列表；重复添加幂等返回既有条目。</summary>
+    private static async Task<IResult> AddQuickAccessAsync(
+        HttpContext context,
+        FileQuickAccessAddRequest? request,
+        FileSettingsService settingsService,
+        FileQuickAccessService quickAccess,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (ValidatePath(request?.Path, options, out var normalized) is { } invalid)
+        {
+            return invalid;
+        }
+
+        // 主进程以服务账号运行，Directory.Exists 只证明路径存在，真正的访问边界仍是降权后的用户权限。
+        if (!Directory.Exists(normalized))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "目录不存在",
+                detail: "目标路径不存在或不是目录。");
+        }
+
+        var result = await quickAccess.AddAsync(identity!.UserName, normalized, cancellationToken);
+        if (result.LimitReached)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "快速访问已满",
+                detail: $"每个账号最多保存 {FileQuickAccessService.MaxEntriesPerUser} 个快速访问目录，请先移除不再需要的条目。");
+        }
+
+        return Results.Ok(new FileQuickAccessAddResponse(true, result.Created, result.Item!));
+    }
+
+    /// <summary>移除当前账号的一条快速访问记录；条目不存在或不属于当前账号时返回 404。</summary>
+    private static async Task<IResult> RemoveQuickAccessAsync(
+        HttpContext context,
+        long id,
+        FileSettingsService settingsService,
+        FileQuickAccessService quickAccess,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (!await quickAccess.RemoveAsync(identity!.UserName, id, cancellationToken))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "条目不存在",
+                detail: "该快速访问条目不存在，或不属于当前账号。");
+        }
+
+        return Results.Ok(new FileMutationResponse(true));
     }
 
     private static async Task<IResult> ListAsync(
@@ -686,6 +772,12 @@ public sealed record FileTransferRequest(string[]? Sources, string? Target, bool
 public sealed record FileTextSaveRequest(string? Path, string? Content, long ExpectedModifiedAt, bool HasBom);
 
 public sealed record FileRootsResponse(string Home, string[] Roots);
+
+public sealed record FileQuickAccessAddRequest(string? Path);
+
+public sealed record FileQuickAccessListResponse(FileQuickAccessEntry[] Items);
+
+public sealed record FileQuickAccessAddResponse(bool Ok, bool Created, FileQuickAccessEntry Item);
 
 public sealed record FileMutationResponse(bool Ok);
 

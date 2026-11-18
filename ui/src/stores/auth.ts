@@ -9,6 +9,7 @@ import {
 import { loadEditorAssociations } from '@/api/editor'
 import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
+import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
 import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -46,6 +47,7 @@ export const useAuthStore = defineStore('auth', () => {
       // 新会话从空编辑器、空文件剪贴板、空终端请求与首页标签开始，避免上一个用户的状态串到当前用户。
       useEditorStore().reset()
       useFilesClipboardStore().reset()
+      useFilesQuickAccessStore().reset()
       useTerminalStore().reset()
       useWorkspaceStore().reset()
     } finally {
@@ -60,6 +62,7 @@ export const useAuthStore = defineStore('auth', () => {
       user.value = null
       useEditorStore().reset()
       useFilesClipboardStore().reset()
+      useFilesQuickAccessStore().reset()
       useTerminalStore().reset()
       // 标签状态随会话结束清空，避免下一个用户看到上一个用户打开的模块。
       useWorkspaceStore().reset()

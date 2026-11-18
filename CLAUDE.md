@@ -42,7 +42,8 @@ are implemented.
   `wwwroot` with history-mode fallback.
 - `ui/` — Vue 3 + TypeScript + Element Plus SPA built with Vite (`package.json`,
   `package-lock.json`): router guard, Pinia auth/editor stores, login page, post-login shell, a
-  multi-tab xterm.js terminal page, a file manager page with a root-only settings drawer, a
+  multi-tab xterm.js terminal page, a file manager page with a per-account quick-access sidebar
+  and a root-only settings drawer, a
   CodeMirror-based multi-tab text editor page with per-suffix syntax highlighting and a root-only
   suffix/scheme settings drawer, a container manager page, a systemd service manager page, a
   process manager page with a root-only settings drawer and visible-only polling, an application
@@ -76,6 +77,19 @@ one tab can be pasted into the directory of another; a successful cut-paste clea
 tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost when the workspace
 `文件管理` tab is closed.
 
+The file manager body is split into a 200 px left `快速访问` sidebar and the inner tab area. The
+sidebar lists the signed-in account's quick-access directories stored in SQLite (`FileQuickAccess`
+table, per-account: `(UserName, Path)` unique, at most 50 entries); its header carries an
+**independent** circular `设置` gear (`Setting`, `aria-label="快速访问设置"`) that is separate from
+the root-only page settings gear and opens a 480 px `el-drawer` where entries can be removed.
+Clicking an entry navigates the currently active inner tab to that directory (other tabs keep
+their own directory); the sidebar highlights the active tab's current path. Adding happens from a
+directory row's `操作` menu (`添加到快速访问`, disabled for files), which is shared through the
+`ui/src/stores/filesQuickAccess.ts` Pinia store so the sidebar updates immediately. The list is a
+navigation shortcut only — opening a directory is still validated against the account's OS
+permissions and the configured allowed roots. The sidebar is hidden silently when
+`GET /api/files/quick-access` fails (403/503), and login/logout reset the store.
+
 The `文件管理` page top-right toolbar carries a circular `设置` gear (`Setting`,
 `aria-label="文件管理设置"`) **only to root**: on mount the page silently calls
 `GET /api/files/settings`; success shows the button, any failure (403 for non-root, 503 on
@@ -95,7 +109,7 @@ generic settings table (`Feature = files`).
   `Data/` (EF Core context and entities), `Hosting/` (frontend static files and SPA fallback),
   `Terminal/` (PTY P/Invoke, privileged helper process, session registry, WebSocket endpoint),
   `Files/` (path validation, settings service/validator, file helper process, operation service,
-  REST endpoints),
+  per-account quick-access service, REST endpoints),
   `Editor/` (syntax-scheme definitions, file-type service/validator over the `EditorFileTypes`
   table, read-only associations and root-only settings endpoints),
   `Docker/` (docker CLI runner, group authorization guard, settings service/validator, REST
@@ -113,7 +127,8 @@ generic settings table (`Feature = files`).
   editor association/settings API, docker API, service API, process API, nginx API and package API
   types), `src/config/`
   (runtime config, syntax-scheme ids/defaults and the reactive file-type rules), `src/stores/`
-  (Pinia auth, workspace tab, editor tab, file clipboard and terminal-tab request state),
+  (Pinia auth, workspace tab, editor tab, file clipboard, per-account quick-access list and
+  terminal-tab request state),
   `src/router/`,
   `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
   service / process / nginx / package panels),
@@ -271,10 +286,20 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
   `{sources,target,overwrite}`, `POST /upload?path=&overwrite=` (multipart field `file`),
   `GET /download?path=`, `GET /text?path=`, `POST /text` `{path,content,expectedModifiedAt,hasBom}`,
+  `GET /quick-access`, `POST /quick-access` `{path}`, `DELETE /quick-access/{id}`,
   `GET /settings` and `PUT /settings`
   `{enabled,allowedRoots,maxUploadBytes,maxListEntries,maxTextFileBytes,helperTimeoutSeconds,
   listTimeoutSeconds,transferTimeoutSeconds,streamIdleTimeoutSeconds,streamMaxSeconds}`.
-  The settings endpoints are root-only (uid 0 resolved through `getpwnam_r`; non-root → 403) and
+  Quick access is readable and editable by every signed-in account but scoped to that account:
+  `GET` returns `{items:[{id,path,name}]}` (name is the last path segment, `/` for the root),
+  `POST` validates the path with the same rules as other file endpoints, requires an existing
+  directory (`Directory.Exists` in the main process, which is only a hint — the real boundary stays
+  the dropped user's permissions), is idempotent (an existing entry returns `created=false`), and
+  returns 409 when the 50-entry per-account cap is reached; `DELETE` returns 404 for a missing id
+  or an entry owned by another account. Rows live in the `FileQuickAccess` table (`Id`, `UserName`,
+  `Path`, `CreatedAt`) with a unique `(UserName, Path)` index; the table is created by
+  `KoiDbSchema.EnsureCompatibilityTables`. The settings endpoints are root-only (uid 0 resolved
+  through `getpwnam_r`; non-root → 403) and
   deliberately skip the `Enabled`/platform checks so a disabled or broken configuration can be
   repaired. Other errors are ProblemDetails: 400 invalid path/request or non-UTF-8 text, 403
   permission or outside roots, 404 missing, 409 conflict (external modification or non-empty
@@ -685,9 +710,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   The file is gitignored. `hamster.db` entries in `api/.gitignore` are template leftovers. Since
   `EnsureCreated` does not add tables to an existing database, `KoiDbSchema.EnsureCompatibilityTables`
   runs idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS` for the
-  generic settings table, the `PackageCacheItems` installed-app cache and the `EditorFileTypes`
-  editor suffix rules after `EnsureCreated`; keep its DDL in sync with the EF model (or replace it
-  with EF migrations).
+  generic settings table, the `PackageCacheItems` installed-app cache, the `EditorFileTypes`
+  editor suffix rules and the `FileQuickAccess` per-account quick-access directories after
+  `EnsureCreated`; keep its DDL in sync with the EF model (or replace it with EF migrations).
 - Generic feature settings live in `FeatureConfigs` (`api/Data/FeatureConfigEntity.cs`):
   `Id`, `Feature` (unique, e.g. `packages`), `ConfigJson`, `UpdatedAt`, `UpdatedBy`. Each
   feature owns one JSON row, so future modules can reuse the table and `FeatureConfigStore`

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
 import {
   CopyDocument,
@@ -29,6 +29,7 @@ import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
 import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
+import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
 import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -49,6 +50,11 @@ const props = defineProps<{
   initialPath: string
   /** 登录用户的家目录，用于把跳转输入框中的 ~ 展开为绝对路径。 */
   homePath: string
+  /**
+   * 来自左侧快速访问栏的导航请求；只有当前激活页签会收到非空值，
+   * 隐藏页签始终为 null，避免一起跳转。seq 变化即代表新的点击。
+   */
+  navigateRequest?: { path: string; seq: number } | null
 }>()
 
 const emit = defineEmits<{
@@ -56,11 +62,14 @@ const emit = defineEmits<{
   (e: 'path-change', path: string): void
   /** 请求把某个目录作为新页签打开。 */
   (e: 'open-in-new-tab', path: string): void
+  /** 已消费快速访问导航请求，父级随即清空，避免切换页签时重复跳转。 */
+  (e: 'navigate-consumed'): void
 }>()
 
 const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 const filesClipboard = useFilesClipboardStore()
+const filesQuickAccess = useFilesQuickAccessStore()
 const terminal = useTerminalStore()
 
 const currentPath = ref('')
@@ -241,6 +250,24 @@ function openTerminal(directory: string): void {
   workspace.open('terminal')
 }
 
+/** 把目录加入当前账号的快速访问列表；重复添加只提示不报错。 */
+async function addQuickAccess(row: FileEntry): Promise<void> {
+  if (!row.isDirectory) {
+    return
+  }
+
+  try {
+    const created = await filesQuickAccess.add(row.path)
+    if (created) {
+      ElMessage.success('已添加到快速访问')
+    } else {
+      ElMessage.info('该目录已在快速访问列表中')
+    }
+  } catch (error) {
+    showError(error)
+  }
+}
+
 function downloadEntry(row: FileEntry): void {
   const link = document.createElement('a')
   link.href = buildDownloadUrl(row.path)
@@ -255,6 +282,7 @@ type RowAction =
   | 'open'
   | 'newtab'
   | 'terminal'
+  | 'quick'
   | 'edit'
   | 'download'
   | 'rename'
@@ -274,6 +302,9 @@ function onRowAction(command: RowAction, row: FileEntry): void {
       if (row.isDirectory) {
         openTerminal(row.path)
       }
+      break
+    case 'quick':
+      void addQuickAccess(row)
       break
     case 'edit':
       openTextEditor(row)
@@ -531,6 +562,17 @@ function sortByModified(left: FileEntry, right: FileEntry): number {
   return left.modifiedAt - right.modifiedAt
 }
 
+watch(
+  () => props.navigateRequest,
+  (request) => {
+    if (request) {
+      void load(request.path)
+      // 立即通知父级清空；否则切换页签时新页签会收到同一个残留请求而误跳转。
+      emit('navigate-consumed')
+    }
+  },
+)
+
 onMounted(() => {
   void load(props.initialPath)
 })
@@ -644,6 +686,9 @@ onMounted(() => {
                     </el-dropdown-item>
                     <el-dropdown-item command="terminal" :disabled="!row.isDirectory">
                       打开终端
+                    </el-dropdown-item>
+                    <el-dropdown-item command="quick" :disabled="!row.isDirectory">
+                      添加到快速访问
                     </el-dropdown-item>
                     <el-dropdown-item
                       command="edit"

@@ -66,5 +66,20 @@ public static class KoiDbSchema
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_EditorFileTypes_Extension"
             ON "EditorFileTypes" ("Extension");
             """);
+
+        // 文件管理快速访问目录：按账号隔离，CreatedAt 由 UtcTicksConverter 存为 INTEGER。
+        db.Database.ExecuteSqlRaw("""
+            CREATE TABLE IF NOT EXISTS "FileQuickAccess" (
+                "Id" INTEGER NOT NULL CONSTRAINT "PK_FileQuickAccess" PRIMARY KEY AUTOINCREMENT,
+                "UserName" TEXT NOT NULL,
+                "Path" TEXT NOT NULL,
+                "CreatedAt" INTEGER NOT NULL
+            );
+            """);
+
+        db.Database.ExecuteSqlRaw("""
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_FileQuickAccess_UserName_Path"
+            ON "FileQuickAccess" ("UserName", "Path");
+            """);
     }
 }
