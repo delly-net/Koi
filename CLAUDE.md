@@ -90,6 +90,17 @@ navigation shortcut only — opening a directory is still validated against the 
 permissions and the configured allowed roots. The sidebar is hidden silently when
 `GET /api/files/quick-access` fails (403/503), and login/logout reset the store.
 
+The sidebar width is adjustable (default 200 px, 160–480 px, content area keeps at least 240 px):
+a 9 px drag handle (`role="separator"`, `aria-label="调整快速访问栏宽度"`) sits between the sidebar
+and the inner tab area and also supplies their spacing (`.body` has no flex `gap`). Dragging uses
+Pointer Events with `setPointerCapture`; `pointerup` / `pointercancel` / `lostpointercapture` end
+the drag and save the width. Double-clicking the handle resets to 200 px, and ArrowLeft/ArrowRight
+adjust by 16 px for keyboard users. The width is stored in browser `localStorage` per signed-in
+account under `koi.files.quickAccessWidth.<encodeURIComponent(userName)>` through
+`ui/src/utils/filesLayout.ts` (all access is best-effort: storage failures only `console.warn`), so
+another account on the same browser keeps its own width and the value is restored automatically on
+the next visit. The handle is hidden together with the sidebar but the saved value is kept.
+
 The `文件管理` page top-right toolbar carries a circular `设置` gear (`Setting`,
 `aria-label="文件管理设置"`) **only to root**: on mount the page silently calls
 `GET /api/files/settings`; success shows the button, any failure (403 for non-root, 503 on

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Folder, Setting } from '@element-plus/icons-vue'
 import {
@@ -10,7 +10,16 @@ import {
 } from '@/api/files'
 import { ApiError } from '@/api/http'
 import FileBrowserPane from '@/components/files/FileBrowserPane.vue'
+import { useAuthStore } from '@/stores/auth'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
+import {
+  QUICK_ACCESS_DEFAULT_WIDTH,
+  QUICK_ACCESS_MAX_WIDTH,
+  QUICK_ACCESS_MIN_WIDTH,
+  clampQuickAccessWidth,
+  loadQuickAccessWidth,
+  saveQuickAccessWidth,
+} from '@/utils/filesLayout'
 
 interface FileTab {
   id: string
@@ -44,6 +53,111 @@ const activePath = computed(
 /** 左侧条目点击产生的导航请求；seq 变化即触发当前激活页签跳转。 */
 const navigateRequest = ref<{ path: string; seq: number } | null>(null)
 let navigateSeq = 0
+
+// ---------------- 快速访问栏宽度（可拖拽，按登录账号本地记忆） ----------------
+const auth = useAuthStore()
+const accountName = computed(() => auth.user?.userName ?? '')
+const quickWidth = ref(QUICK_ACCESS_DEFAULT_WIDTH)
+const resizing = ref(false)
+const bodyRef = ref<HTMLElement | null>(null)
+/** 内容区至少保留的宽度，避免侧栏把文件列表挤没。 */
+const minContentWidth = 240
+let resizeStartX = 0
+let resizeStartWidth = 0
+let resizePointerId: number | null = null
+let previousBodyUserSelect = ''
+let previousBodyCursor = ''
+
+/** 按容器宽度计算侧栏可用的最大宽度。 */
+function contentMaxWidth(): number {
+  const total = bodyRef.value?.clientWidth ?? 0
+  if (total <= 0) {
+    return QUICK_ACCESS_MAX_WIDTH
+  }
+
+  return total - minContentWidth
+}
+
+/** 写入宽度前统一夹在 [160, 480] 且不超过容器限制。 */
+function applyResizeWidth(width: number): void {
+  quickWidth.value = clampQuickAccessWidth(width, contentMaxWidth())
+}
+
+/** 只在拖拽结束、双击或键盘调整时落盘，避免 pointermove 高频写入。 */
+function persistQuickWidth(): void {
+  saveQuickAccessWidth(accountName.value, quickWidth.value)
+}
+
+/** 恢复账号上次保存的宽度；无记录保持默认值。 */
+function loadSavedQuickWidth(): void {
+  const saved = loadQuickAccessWidth(accountName.value, contentMaxWidth())
+  if (saved !== null) {
+    quickWidth.value = saved
+  }
+}
+
+function startResize(event: PointerEvent): void {
+  if (event.button !== 0) {
+    return
+  }
+
+  event.preventDefault()
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
+  resizePointerId = event.pointerId
+  resizeStartX = event.clientX
+  resizeStartWidth = quickWidth.value
+  resizing.value = true
+  previousBodyUserSelect = document.body.style.userSelect
+  previousBodyCursor = document.body.style.cursor
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+}
+
+function onResizeMove(event: PointerEvent): void {
+  if (!resizing.value || event.pointerId !== resizePointerId) {
+    return
+  }
+
+  applyResizeWidth(resizeStartWidth + (event.clientX - resizeStartX))
+}
+
+/** 结束拖拽；pointerup / pointercancel / lostpointercapture 都会走到这里。 */
+function finishResize(event: PointerEvent): void {
+  if (!resizing.value || event.pointerId !== resizePointerId) {
+    return
+  }
+
+  resizing.value = false
+  resizePointerId = null
+  releaseDragStyles()
+  persistQuickWidth()
+}
+
+function releaseDragStyles(): void {
+  document.body.style.userSelect = previousBodyUserSelect
+  document.body.style.cursor = previousBodyCursor
+  previousBodyUserSelect = ''
+  previousBodyCursor = ''
+}
+
+/** 双击分隔条恢复默认宽度并保存。 */
+function resetQuickWidth(): void {
+  applyResizeWidth(QUICK_ACCESS_DEFAULT_WIDTH)
+  persistQuickWidth()
+}
+
+/** 键盘可达：左右方向键每次调整 16px，并保存。 */
+function onResizeKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+    return
+  }
+
+  event.preventDefault()
+  const delta = event.key === 'ArrowLeft' ? -16 : 16
+  applyResizeWidth(quickWidth.value + delta)
+  persistQuickWidth()
+}
 
 // ---------------- 文件管理设置（仅 root） ----------------
 const settingsAvailable = ref(false)
@@ -271,10 +385,34 @@ async function init(): Promise<void> {
 }
 
 onMounted(() => {
+  loadSavedQuickWidth()
   void init()
   void loadSettingsAvailability()
   // 快速访问对每个登录账号独立，失败（403/503）时静默隐藏侧栏；重新打开面板时顺便刷新。
   void quickAccess.load(true)
+})
+
+// 会话恢复较晚时账号名可能稍后才可用，补读一次该账号的宽度。
+watch(accountName, (name) => {
+  if (name) {
+    loadSavedQuickWidth()
+  }
+})
+
+// 拖拽期间侧栏若被隐藏（例如接口失败），分隔条会卸载而收不到 pointerup，这里兜底复位。
+watch(quickAccessVisible, (visible) => {
+  if (!visible && resizing.value) {
+    resizing.value = false
+    resizePointerId = null
+    releaseDragStyles()
+    persistQuickWidth()
+  }
+})
+
+onBeforeUnmount(() => {
+  resizing.value = false
+  resizePointerId = null
+  releaseDragStyles()
 })
 </script>
 
@@ -305,9 +443,13 @@ onMounted(() => {
       description="文件管理可能已被管理员关闭，或当前平台不支持；相关操作会返回 503，重新启用后即可继续使用。"
     />
 
-    <div class="body">
+    <div ref="bodyRef" class="body">
       <!-- 左侧快速访问：按登录账号保存在 SQLite，顶部独立设置按钮用于移除条目 -->
-      <aside v-if="quickAccessVisible" class="quick-access">
+      <aside
+        v-if="quickAccessVisible"
+        class="quick-access"
+        :style="{ width: `${quickWidth}px` }"
+      >
         <div class="quick-access-header">
           <span class="quick-access-title">快速访问</span>
           <el-tooltip content="快速访问设置" placement="bottom">
@@ -341,6 +483,28 @@ onMounted(() => {
           </button>
         </div>
       </aside>
+
+      <!-- 拖拽分隔条：松手后按当前登录账号保存宽度，双击恢复默认值 -->
+      <div
+        v-if="quickAccessVisible"
+        class="resizer"
+        :class="{ resizing }"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整快速访问栏宽度"
+        :aria-valuenow="quickWidth"
+        :aria-valuemin="QUICK_ACCESS_MIN_WIDTH"
+        :aria-valuemax="QUICK_ACCESS_MAX_WIDTH"
+        tabindex="0"
+        title="拖动调整宽度，双击恢复默认"
+        @pointerdown="startResize"
+        @pointermove="onResizeMove"
+        @pointerup="finishResize"
+        @pointercancel="finishResize"
+        @lostpointercapture="finishResize"
+        @dblclick="resetQuickWidth"
+        @keydown="onResizeKeydown"
+      />
 
       <div class="content">
         <!-- 页签面板保持挂载、仅切换显隐，目录位置与选中项随页签保留 -->
@@ -583,20 +747,57 @@ onMounted(() => {
 .body {
   display: flex;
   flex: 1;
-  gap: 8px;
+  gap: 0;
   min-height: 0;
 }
 
-/* 左侧快速访问栏；设置按钮独立于右上角的文件管理设置齿轮 */
+/* 左侧快速访问栏；宽度由拖拽分隔条控制并按账号记忆，设置按钮独立于右上角的文件管理设置齿轮 */
 .quick-access {
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 200px;
+  min-width: 0;
   min-height: 0;
   background: #ffffff;
   border: 1px solid #e4e7ed;
   border-radius: 6px;
+}
+
+/* 分隔条同时承担侧栏与内容区的间距；竖条只做视觉提示，热区为整条 9px */
+.resizer {
+  position: relative;
+  flex: none;
+  align-self: stretch;
+  width: 9px;
+  min-height: 0;
+  border-radius: 4px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.resizer::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 40px;
+  border-radius: 2px;
+  background: #dcdfe6;
+  transform: translate(-50%, -50%);
+  transition: background-color 0.15s;
+}
+
+.resizer:hover::before,
+.resizer.resizing::before,
+.resizer:focus-visible::before {
+  background: #409eff;
+}
+
+.resizer:focus-visible {
+  outline: 2px solid #409eff;
+  outline-offset: -2px;
 }
 
 .quick-access-header {
