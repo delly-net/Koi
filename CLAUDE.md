@@ -101,6 +101,27 @@ account under `koi.files.quickAccessWidth.<encodeURIComponent(userName)>` throug
 another account on the same browser keeps its own width and the value is restored automatically on
 the next visit. The handle is hidden together with the sidebar but the saved value is kept.
 
+The sidebar is split into two vertical sections separated by a 9 px horizontal drag handle
+(`role="separator"`, `aria-orientation="horizontal"`, `aria-label="调整快速访问栏高度"`): the
+`快速访问` list on top (default height 300 px, at least 120 px) and a `目录树` panel filling the
+rest (at least 120 px, also enforced on window resize). The top height is persisted per signed-in
+account in `localStorage['koi.files.quickAccessHeight.<encodeURIComponent(userName)>']` through
+the same `filesLayout.ts` helpers; double-clicking the handle restores 300 px and
+ArrowUp/ArrowDown adjust by 16 px. The horizontal width handle described above still controls the
+whole sidebar's width.
+
+`DirectoryTree.vue` (`ui/src/components/files/`) renders the bottom panel as a lazily loaded,
+self-drawn indented tree. Its roots are the configured `AllowedRoots` returned by
+`GET /api/files/roots` (nested roots are collapsed to the outermost, empty list falls back to the
+home directory). Expanding a node calls the existing `GET /api/files/list?path=` and keeps only
+`isDirectory` entries — no new backend endpoint or API contract change. Clicking a row asks the
+active file pane to navigate to that directory through the same navigation-request channel used
+by quick access, so hidden inner tabs keep their own directory. Conversely, every successful pane
+load (`path-change`) makes the tree expand the ancestors and highlight the current directory;
+`revealSeq` tokens discard stale async reveals, and a refresh button in the tree header rebuilds
+the cache and re-reveals the current path. A failed directory load is kept on that node (retry by
+clicking again) and does not break the rest of the tree.
+
 The `文件管理` page top-right toolbar carries a circular `设置` gear (`Setting`,
 `aria-label="文件管理设置"`) **only to root**: on mount the page silently calls
 `GET /api/files/settings`; success shows the button, any failure (403 for non-root, 503 on

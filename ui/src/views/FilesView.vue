@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Folder, Setting } from '@element-plus/icons-vue'
 import {
@@ -9,15 +9,21 @@ import {
   type FileSettings,
 } from '@/api/files'
 import { ApiError } from '@/api/http'
+import DirectoryTree from '@/components/files/DirectoryTree.vue'
 import FileBrowserPane from '@/components/files/FileBrowserPane.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
 import {
+  QUICK_ACCESS_DEFAULT_HEIGHT,
   QUICK_ACCESS_DEFAULT_WIDTH,
   QUICK_ACCESS_MAX_WIDTH,
+  QUICK_ACCESS_MIN_HEIGHT,
   QUICK_ACCESS_MIN_WIDTH,
+  clampQuickAccessHeight,
   clampQuickAccessWidth,
+  loadQuickAccessHeight,
   loadQuickAccessWidth,
+  saveQuickAccessHeight,
   saveQuickAccessWidth,
 } from '@/utils/filesLayout'
 
@@ -34,6 +40,8 @@ interface FileTab {
 const tabs = ref<FileTab[]>([])
 const activeKey = ref('')
 const homePath = ref('')
+/** 允许访问的根目录，作为左侧目录树的根节点；随设置变化刷新。 */
+const allowedRoots = ref<string[]>([])
 const loadingRoots = ref(false)
 /** 设置中关闭文件管理后显示的常驻提示。 */
 const disabledNotice = ref(false)
@@ -159,6 +167,118 @@ function onResizeKeydown(event: KeyboardEvent): void {
   persistQuickWidth()
 }
 
+// ---------------- 侧栏上下分栏（快速访问 / 目录树，高度可拖拽） ----------------
+/** 水平分隔条高度，与样式中的 height 保持一致。 */
+const SPLITTER_HEIGHT = 9
+/** 目录树至少保留的高度，避免被上部分挤没。 */
+const TREE_MIN_HEIGHT = 120
+
+const quickHeight = ref(QUICK_ACCESS_DEFAULT_HEIGHT)
+const resizingHeight = ref(false)
+let heightStartY = 0
+let heightStartValue = 0
+let heightPointerId: number | null = null
+let previousHeightBodyUserSelect = ''
+let previousHeightBodyCursor = ''
+
+/** 按容器高度计算上部分可用的最大高度（为分隔条与目录树留出空间）。 */
+function contentMaxHeight(): number {
+  const total = bodyRef.value?.clientHeight ?? 0
+  if (total <= 0) {
+    // 首次挂载时布局尚未完成，先不限制，随后在 nextTick 中按真实高度夹取。
+    return Number.MAX_SAFE_INTEGER
+  }
+
+  return total - SPLITTER_HEIGHT - TREE_MIN_HEIGHT
+}
+
+/** 写入前统一夹在 [120, 容器上限] 内。 */
+function applyQuickHeight(height: number): void {
+  quickHeight.value = clampQuickAccessHeight(height, contentMaxHeight())
+}
+
+/** 只在拖拽结束、双击或键盘调整时落盘。 */
+function persistQuickHeight(): void {
+  saveQuickAccessHeight(accountName.value, quickHeight.value)
+}
+
+/** 恢复账号上次保存的高度；无记录时回到默认 300px。 */
+function loadSavedQuickHeight(): void {
+  const saved = loadQuickAccessHeight(accountName.value, contentMaxHeight())
+  quickHeight.value = clampQuickAccessHeight(
+    saved ?? QUICK_ACCESS_DEFAULT_HEIGHT,
+    contentMaxHeight(),
+  )
+}
+
+function startHeightResize(event: PointerEvent): void {
+  if (event.button !== 0) {
+    return
+  }
+
+  event.preventDefault()
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
+  heightPointerId = event.pointerId
+  heightStartY = event.clientY
+  heightStartValue = quickHeight.value
+  resizingHeight.value = true
+  previousHeightBodyUserSelect = document.body.style.userSelect
+  previousHeightBodyCursor = document.body.style.cursor
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'row-resize'
+}
+
+function onHeightResizeMove(event: PointerEvent): void {
+  if (!resizingHeight.value || event.pointerId !== heightPointerId) {
+    return
+  }
+
+  applyQuickHeight(heightStartValue + (event.clientY - heightStartY))
+}
+
+/** 结束拖拽；pointerup / pointercancel / lostpointercapture 都会走到这里。 */
+function finishHeightResize(event: PointerEvent): void {
+  if (!resizingHeight.value || event.pointerId !== heightPointerId) {
+    return
+  }
+
+  resizingHeight.value = false
+  heightPointerId = null
+  releaseHeightDragStyles()
+  persistQuickHeight()
+}
+
+function releaseHeightDragStyles(): void {
+  document.body.style.userSelect = previousHeightBodyUserSelect
+  document.body.style.cursor = previousHeightBodyCursor
+  previousHeightBodyUserSelect = ''
+  previousHeightBodyCursor = ''
+}
+
+/** 双击分隔条恢复默认高度并保存。 */
+function resetQuickHeight(): void {
+  applyQuickHeight(QUICK_ACCESS_DEFAULT_HEIGHT)
+  persistQuickHeight()
+}
+
+/** 键盘可达：上下方向键每次调整 16px，并保存。 */
+function onHeightResizeKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') {
+    return
+  }
+
+  event.preventDefault()
+  const delta = event.key === 'ArrowUp' ? -16 : 16
+  applyQuickHeight(quickHeight.value + delta)
+  persistQuickHeight()
+}
+
+/** 窗口变矮时重新夹取，避免目录树被挤成 0 高；不强制覆盖已保存值。 */
+function onWindowResize(): void {
+  applyQuickHeight(quickHeight.value)
+}
+
 // ---------------- 文件管理设置（仅 root） ----------------
 const settingsAvailable = ref(false)
 const settingsVisible = ref(false)
@@ -211,10 +331,10 @@ function updateTabTitle(id: string, path: string): void {
 }
 
 /**
- * 点击左侧快速访问条目：把导航请求交给当前激活的内层页签。
+ * 左侧快速访问条目与目录树共用：把导航请求交给当前激活的内层页签。
  * 隐藏页签不会收到请求，因此其它页签的目录保持不变。
  */
-function navigateQuick(path: string): void {
+function navigateActive(path: string): void {
   if (!activeKey.value) {
     return
   }
@@ -317,6 +437,7 @@ async function refreshRootsQuietly(): Promise<void> {
   try {
     const roots = await getFileRoots()
     homePath.value = roots.home
+    allowedRoots.value = roots.roots
   } catch {
     // 配置已保存，根目录刷新失败不影响抽屉结果提示。
   }
@@ -370,6 +491,7 @@ async function init(): Promise<void> {
   try {
     const roots = await getFileRoots()
     homePath.value = roots.home
+    allowedRoots.value = roots.roots
     addTab(roots.home)
   } catch (error) {
     // 管理员在设置中关闭文件管理（或平台不支持）时返回 503，用常驻提示而不是临时 toast。
@@ -386,33 +508,53 @@ async function init(): Promise<void> {
 
 onMounted(() => {
   loadSavedQuickWidth()
+  loadSavedQuickHeight()
+  // 首次渲染后按真实容器高度夹取一次，避免恢复的高度超出可视区域。
+  void nextTick(() => applyQuickHeight(quickHeight.value))
+  window.addEventListener('resize', onWindowResize)
   void init()
   void loadSettingsAvailability()
   // 快速访问对每个登录账号独立，失败（403/503）时静默隐藏侧栏；重新打开面板时顺便刷新。
   void quickAccess.load(true)
 })
 
-// 会话恢复较晚时账号名可能稍后才可用，补读一次该账号的宽度。
+// 会话恢复较晚时账号名可能稍后才可用，补读一次该账号的宽度与高度。
 watch(accountName, (name) => {
   if (name) {
     loadSavedQuickWidth()
+    loadSavedQuickHeight()
   }
 })
 
 // 拖拽期间侧栏若被隐藏（例如接口失败），分隔条会卸载而收不到 pointerup，这里兜底复位。
 watch(quickAccessVisible, (visible) => {
-  if (!visible && resizing.value) {
+  if (visible) {
+    return
+  }
+
+  if (resizing.value) {
     resizing.value = false
     resizePointerId = null
     releaseDragStyles()
     persistQuickWidth()
   }
+
+  if (resizingHeight.value) {
+    resizingHeight.value = false
+    heightPointerId = null
+    releaseHeightDragStyles()
+    persistQuickHeight()
+  }
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
   resizing.value = false
   resizePointerId = null
   releaseDragStyles()
+  resizingHeight.value = false
+  heightPointerId = null
+  releaseHeightDragStyles()
 })
 </script>
 
@@ -444,43 +586,78 @@ onBeforeUnmount(() => {
     />
 
     <div ref="bodyRef" class="body">
-      <!-- 左侧快速访问：按登录账号保存在 SQLite，顶部独立设置按钮用于移除条目 -->
+      <!--
+        左侧侧栏分上下两部分：上方快速访问（按账号保存在 SQLite，独立设置按钮用于移除条目），
+        下方目录树；中间水平分隔条可拖动调整上部分高度。
+      -->
       <aside
         v-if="quickAccessVisible"
-        class="quick-access"
+        class="sidebar"
         :style="{ width: `${quickWidth}px` }"
       >
-        <div class="quick-access-header">
-          <span class="quick-access-title">快速访问</span>
-          <el-tooltip content="快速访问设置" placement="bottom">
-            <el-button
-              class="quick-settings"
-              :icon="Setting"
-              circle
-              size="small"
-              aria-label="快速访问设置"
-              @click="quickSettingsVisible = true"
+        <div class="quick-access" :style="{ height: `${quickHeight}px` }">
+          <div class="quick-access-header">
+            <span class="quick-access-title">快速访问</span>
+            <el-tooltip content="快速访问设置" placement="bottom">
+              <el-button
+                class="quick-settings"
+                :icon="Setting"
+                circle
+                size="small"
+                aria-label="快速访问设置"
+                @click="quickSettingsVisible = true"
+              />
+            </el-tooltip>
+          </div>
+          <div class="quick-access-list">
+            <el-empty
+              v-if="quickItems.length === 0"
+              :image-size="48"
+              description="暂无快速访问目录"
             />
-          </el-tooltip>
+            <button
+              v-for="item in quickItems"
+              :key="item.id"
+              type="button"
+              class="quick-item"
+              :class="{ active: item.path === activePath }"
+              :title="item.path"
+              @click="navigateActive(item.path)"
+            >
+              <el-icon class="quick-item-icon"><Folder /></el-icon>
+              <span class="quick-item-name">{{ item.name }}</span>
+            </button>
+          </div>
         </div>
-        <div class="quick-access-list">
-          <el-empty
-            v-if="quickItems.length === 0"
-            :image-size="48"
-            description="暂无快速访问目录"
+
+        <!-- 上下的高度分隔条：松手后按账号保存，双击恢复 300px -->
+        <div
+          class="splitter-h"
+          :class="{ resizing: resizingHeight }"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="调整快速访问栏高度"
+          :aria-valuenow="quickHeight"
+          :aria-valuemin="QUICK_ACCESS_MIN_HEIGHT"
+          :aria-valuemax="contentMaxHeight()"
+          tabindex="0"
+          title="拖动调整高度，双击恢复默认"
+          @pointerdown="startHeightResize"
+          @pointermove="onHeightResizeMove"
+          @pointerup="finishHeightResize"
+          @pointercancel="finishHeightResize"
+          @lostpointercapture="finishHeightResize"
+          @dblclick="resetQuickHeight"
+          @keydown="onHeightResizeKeydown"
+        />
+
+        <div class="tree-panel">
+          <DirectoryTree
+            :roots="allowedRoots"
+            :home-path="homePath"
+            :current-path="activePath"
+            @navigate="navigateActive"
           />
-          <button
-            v-for="item in quickItems"
-            :key="item.id"
-            type="button"
-            class="quick-item"
-            :class="{ active: item.path === activePath }"
-            :title="item.path"
-            @click="navigateQuick(item.path)"
-          >
-            <el-icon class="quick-item-icon"><Folder /></el-icon>
-            <span class="quick-item-name">{{ item.name }}</span>
-          </button>
         </div>
       </aside>
 
@@ -751,8 +928,8 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
-/* 左侧快速访问栏；宽度由拖拽分隔条控制并按账号记忆，设置按钮独立于右上角的文件管理设置齿轮 */
-.quick-access {
+/* 左侧侧栏：宽度由竖向分隔条控制，内部再分为快速访问 / 目录树上下两部分 */
+.sidebar {
   display: flex;
   flex: none;
   flex-direction: column;
@@ -761,6 +938,60 @@ onBeforeUnmount(() => {
   background: #ffffff;
   border: 1px solid #e4e7ed;
   border-radius: 6px;
+}
+
+/* 上部分高度由水平分隔条控制并按账号记忆；设置按钮独立于右上角的文件管理设置齿轮 */
+.quick-access {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 水平分隔条：整条 9px 为拖拽热区，中间 40px 横条只做视觉提示 */
+.splitter-h {
+  box-sizing: border-box;
+  position: relative;
+  flex: none;
+  height: 9px;
+  border-top: 1px solid #ebeef5;
+  cursor: row-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.splitter-h::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: #dcdfe6;
+  transform: translate(-50%, -50%);
+  transition: background-color 0.15s;
+}
+
+.splitter-h:hover::before,
+.splitter-h.resizing::before,
+.splitter-h:focus-visible::before {
+  background: #409eff;
+}
+
+.splitter-h:focus-visible {
+  outline: 2px solid #409eff;
+  outline-offset: -2px;
+}
+
+/* 下部分目录树占满剩余高度，内部自行滚动 */
+.tree-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* 分隔条同时承担侧栏与内容区的间距；竖条只做视觉提示，热区为整条 9px */

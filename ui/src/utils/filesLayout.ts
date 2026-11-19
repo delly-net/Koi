@@ -14,7 +14,14 @@ export const QUICK_ACCESS_MIN_WIDTH = 160
 /** 最大宽度，避免侧栏挤占文件列表。 */
 export const QUICK_ACCESS_MAX_WIDTH = 480
 
+/** 上下分栏时快速访问的默认高度。 */
+export const QUICK_ACCESS_DEFAULT_HEIGHT = 300
+/** 上部分最小高度，保证标题、设置按钮与若干条目可见。 */
+export const QUICK_ACCESS_MIN_HEIGHT = 120
+
 const KEY_PREFIX = 'koi.files.quickAccessWidth.'
+/** 上部分高度的独立存储键前缀；与宽度分开记忆。 */
+const HEIGHT_KEY_PREFIX = 'koi.files.quickAccessHeight.'
 
 /** 访问 localStorage；隐私模式或禁用存储时浏览器可能直接抛异常。 */
 function getStorage(): Storage | null {
@@ -92,5 +99,72 @@ export function saveQuickAccessWidth(userName: string, width: number): void {
     storage.setItem(quickAccessWidthKey(userName), String(clampQuickAccessWidth(width)))
   } catch (error) {
     console.warn('保存快速访问栏宽度失败', error)
+  }
+}
+
+/** 按账号生成上部分高度的存储键。 */
+export function quickAccessHeightKey(userName: string): string {
+  return `${HEIGHT_KEY_PREFIX}${encodeURIComponent(userName)}`
+}
+
+/**
+ * 把上部分高度夹在允许区间内并取整。
+ * maxHeight 由容器实时高度决定（需为下方目录树保留空间），不小于最小高度。
+ */
+export function clampQuickAccessHeight(
+  height: number,
+  maxHeight: number = Number.MAX_SAFE_INTEGER,
+): number {
+  const upper = Math.max(QUICK_ACCESS_MIN_HEIGHT, Math.floor(maxHeight))
+  return Math.min(upper, Math.max(QUICK_ACCESS_MIN_HEIGHT, Math.round(height)))
+}
+
+/** 读取账号已保存的上部分高度；无记录、非法值或存储不可用时返回 null。 */
+export function loadQuickAccessHeight(
+  userName: string,
+  maxHeight: number = Number.MAX_SAFE_INTEGER,
+): number | null {
+  if (!userName) {
+    return null
+  }
+
+  const storage = getStorage()
+  if (!storage) {
+    return null
+  }
+
+  try {
+    const raw = storage.getItem(quickAccessHeightKey(userName))
+    if (raw === null) {
+      return null
+    }
+
+    const value = Number(raw)
+    if (!Number.isFinite(value)) {
+      return null
+    }
+
+    return clampQuickAccessHeight(value, maxHeight)
+  } catch (error) {
+    console.warn('读取快速访问栏高度失败', error)
+    return null
+  }
+}
+
+/** 保存账号的上部分高度；存储不可用或写入失败只告警，不阻塞界面。 */
+export function saveQuickAccessHeight(userName: string, height: number): void {
+  if (!userName) {
+    return
+  }
+
+  const storage = getStorage()
+  if (!storage) {
+    return
+  }
+
+  try {
+    storage.setItem(quickAccessHeightKey(userName), String(clampQuickAccessHeight(height)))
+  } catch (error) {
+    console.warn('保存快速访问栏高度失败', error)
   }
 }
