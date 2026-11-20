@@ -65,7 +65,7 @@ already open), so the request is never lost and each click creates a new tab.
 
 Inside the single `文件管理` workspace tab the file manager is itself tabbed: every inner tab
 (`FileBrowserPane` in `ui/src/components/files/`) browses an independent directory and keeps its own
-path, listing, selection and loading state. The `+` button opens a new tab at the account home
+path, listing, selection and loading state, plus its own sidebar instance. The `+` button opens a new tab at the account home
 directory, and a directory row's `操作` menu offers `在新页签打开`. Each tab's path bar carries a
 `跳转` button (`Position` icon) next to the breadcrumbs: it opens a dialog prefilled with the
 current directory, where a `/`-prefixed path is used as-is, `~` / `~/...` expands to the account
@@ -77,50 +77,59 @@ one tab can be pasted into the directory of another; a successful cut-paste clea
 tab keeps it, and login/logout reset it. Inner tabs are in-memory and are lost when the workspace
 `文件管理` tab is closed.
 
-The file manager body is split into a 200 px left `快速访问` sidebar and the inner tab area. The
-sidebar lists the signed-in account's quick-access directories stored in SQLite (`FileQuickAccess`
-table, per-account: `(UserName, Path)` unique, at most 50 entries); its header carries an
-**independent** circular `设置` gear (`Setting`, `aria-label="快速访问设置"`) that is separate from
-the root-only page settings gear and opens a 480 px `el-drawer` where entries can be removed.
-Clicking an entry navigates the currently active inner tab to that directory (other tabs keep
-their own directory); the sidebar highlights the active tab's current path. Adding happens from a
-directory row's `操作` menu (`添加到快速访问`, disabled for files), which is shared through the
-`ui/src/stores/filesQuickAccess.ts` Pinia store so the sidebar updates immediately. The list is a
+Every inner file tab renders **its own** `快速访问` sidebar and `目录树` panel through
+`FileSidebar.vue` (`ui/src/components/files/`, mounted by `FileBrowserPane`), so quick-access
+highlighting, tree expansion, the settings drawer and scroll position belong to that tab and are
+preserved by `el-tabs` while the pane stays mounted. The sidebar lists the signed-in account's
+quick-access directories stored in SQLite (`FileQuickAccess` table, per-account:
+`(UserName, Path)` unique, at most 50 entries); its header carries an **independent** circular
+`设置` gear (`Setting`, `aria-label="快速访问设置"`) that is separate from the root-only page
+settings gear and opens a 480 px `el-drawer` where entries can be removed. The list data itself
+is the shared `ui/src/stores/filesQuickAccess.ts` Pinia store: adding from a directory row's
+`操作` menu (`添加到快速访问`, disabled for files) or removing from any tab's drawer updates every
+open tab's sidebar immediately. Clicking an entry navigates the tab that owns that sidebar
+directly (`FileBrowserPane.load`), so hidden tabs keep their own directory. The list is a
 navigation shortcut only — opening a directory is still validated against the account's OS
-permissions and the configured allowed roots. The sidebar is hidden silently when
-`GET /api/files/quick-access` fails (403/503), and login/logout reset the store.
+permissions and the configured allowed roots. A sidebar hides itself silently when
+`GET /api/files/quick-access` fails (403/503), and login/logout reset the store. When the
+administrator disables file management, `FilesView` passes `sidebarVisible=false` so every pane
+unmounts its sidebar and remounts (retrying the list load) when the feature is re-enabled.
 
-The sidebar width is adjustable (default 200 px, 160–480 px, content area keeps at least 240 px):
-a 9 px drag handle (`role="separator"`, `aria-label="调整快速访问栏宽度"`) sits between the sidebar
-and the inner tab area and also supplies their spacing (`.body` has no flex `gap`). Dragging uses
-Pointer Events with `setPointerCapture`; `pointerup` / `pointercancel` / `lostpointercapture` end
-the drag and save the width. Double-clicking the handle resets to 200 px, and ArrowLeft/ArrowRight
-adjust by 16 px for keyboard users. The width is stored in browser `localStorage` per signed-in
-account under `koi.files.quickAccessWidth.<encodeURIComponent(userName)>` through
-`ui/src/utils/filesLayout.ts` (all access is best-effort: storage failures only `console.warn`), so
-another account on the same browser keeps its own width and the value is restored automatically on
-the next visit. The handle is hidden together with the sidebar but the saved value is kept.
+Each tab's sidebar width is adjustable (default 200 px, 160–480 px, content area keeps at least
+240 px): a 9 px drag handle (`role="separator"`, `aria-label="调整快速访问栏宽度"`) sits between
+the sidebar and the pane's file area and also supplies their spacing. Dragging uses Pointer Events
+with `setPointerCapture`; `pointerup` / `pointercancel` / `lostpointercapture` end the drag and
+save the width. Double-clicking the handle resets to 200 px, and ArrowLeft/ArrowRight adjust by
+16 px for keyboard users. Width is account-level shared through
+`ui/src/stores/filesSidebarLayout.ts`: dragging in one tab updates every open tab's sidebar
+reactively, and the value is stored in browser `localStorage` per signed-in account under
+`koi.files.quickAccessWidth.<encodeURIComponent(userName)>` via `ui/src/utils/filesLayout.ts` (all
+access is best-effort: storage failures only `console.warn`). Another account on the same browser
+keeps its own width, and the value is restored automatically on the next visit. The handle is
+hidden together with the sidebar but the saved value is kept.
 
-The sidebar is split into two vertical sections separated by a 9 px horizontal drag handle
+Each sidebar is split into two vertical sections separated by a 9 px horizontal drag handle
 (`role="separator"`, `aria-orientation="horizontal"`, `aria-label="调整快速访问栏高度"`): the
 `快速访问` list on top (default height 300 px, at least 120 px) and a `目录树` panel filling the
-rest (at least 120 px, also enforced on window resize). The top height is persisted per signed-in
-account in `localStorage['koi.files.quickAccessHeight.<encodeURIComponent(userName)>']` through
-the same `filesLayout.ts` helpers; double-clicking the handle restores 300 px and
-ArrowUp/ArrowDown adjust by 16 px. The horizontal width handle described above still controls the
-whole sidebar's width.
+rest (at least 120 px, also enforced when the pane's container resizes). The top height is
+account-level shared through the same `filesSidebarLayout.ts` store and persisted per signed-in
+account in `localStorage['koi.files.quickAccessHeight.<encodeURIComponent(userName)>']` via
+`filesLayout.ts`; double-clicking the handle restores 300 px and ArrowUp/ArrowDown adjust by
+16 px. A `ResizeObserver` on the pane body re-clamps both dimensions when the sidebar becomes
+visible (hidden panes report size 0 and are skipped). The horizontal width handle described above
+still controls the whole sidebar's width.
 
-`DirectoryTree.vue` (`ui/src/components/files/`) renders the bottom panel as a lazily loaded,
-self-drawn indented tree. Its roots are the configured `AllowedRoots` returned by
+`DirectoryTree.vue` (`ui/src/components/files/`) renders each sidebar's bottom panel as a lazily
+loaded, self-drawn indented tree. Its roots are the configured `AllowedRoots` returned by
 `GET /api/files/roots` (nested roots are collapsed to the outermost, empty list falls back to the
 home directory). Expanding a node calls the existing `GET /api/files/list?path=` and keeps only
-`isDirectory` entries — no new backend endpoint or API contract change. Clicking a row asks the
-active file pane to navigate to that directory through the same navigation-request channel used
-by quick access, so hidden inner tabs keep their own directory. Conversely, every successful pane
-load (`path-change`) makes the tree expand the ancestors and highlight the current directory;
-`revealSeq` tokens discard stale async reveals, and a refresh button in the tree header rebuilds
-the cache and re-reveals the current path. A failed directory load is kept on that node (retry by
-clicking again) and does not break the rest of the tree.
+`isDirectory` entries — no new backend endpoint or API contract change. Clicking a row emits
+`navigate` to its own `FileSidebar`, which forwards the path to the owning pane's `load`, so no
+cross-tab navigation channel is involved. Conversely, every successful load in that pane
+(`path-change`) makes its tree expand the ancestors and highlight the current directory; `revealSeq`
+tokens discard stale async reveals, and a refresh button in the tree header rebuilds the cache
+and re-reveals the current path. A failed directory load is kept on that node (retry by clicking
+again) and does not break the rest of the tree.
 
 The `文件管理` page top-right toolbar carries a circular `设置` gear (`Setting`,
 `aria-label="文件管理设置"`) **only to root**: on mount the page silently calls
@@ -166,7 +175,8 @@ generic settings table (`Feature = files`).
   service / process / nginx / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/editor/` (`CodeEditor.vue`
   CodeMirror wrapper and the scheme→language mapping), `src/components/files/` (per-directory
-  `FileBrowserPane` used by the file manager's inner tabs), `src/components/system/`
+  `FileBrowserPane` used by the file manager's inner tabs plus its per-tab `FileSidebar` and
+  `DirectoryTree`), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
 - `icon/` — application icons (48 / 256 / full size).
 

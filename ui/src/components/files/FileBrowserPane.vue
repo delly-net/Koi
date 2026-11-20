@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
 import {
   CopyDocument,
@@ -27,6 +27,7 @@ import {
 } from '@/api/files'
 import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
+import FileSidebar from '@/components/files/FileSidebar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
@@ -50,11 +51,10 @@ const props = defineProps<{
   initialPath: string
   /** 登录用户的家目录，用于把跳转输入框中的 ~ 展开为绝对路径。 */
   homePath: string
-  /**
-   * 来自左侧快速访问栏的导航请求；只有当前激活页签会收到非空值，
-   * 隐藏页签始终为 null，避免一起跳转。seq 变化即代表新的点击。
-   */
-  navigateRequest?: { path: string; seq: number } | null
+  /** 允许访问的根目录，作为本页签侧栏目录树的根节点。 */
+  roots: string[]
+  /** 文件管理被管理员关闭时隐藏侧栏，文件列表仍保持当前状态。 */
+  sidebarVisible: boolean
 }>()
 
 const emit = defineEmits<{
@@ -62,8 +62,6 @@ const emit = defineEmits<{
   (e: 'path-change', path: string): void
   /** 请求把某个目录作为新页签打开。 */
   (e: 'open-in-new-tab', path: string): void
-  /** 已消费快速访问导航请求，父级随即清空，避免切换页签时重复跳转。 */
-  (e: 'navigate-consumed'): void
 }>()
 
 const editor = useEditorStore()
@@ -562,16 +560,10 @@ function sortByModified(left: FileEntry, right: FileEntry): number {
   return left.modifiedAt - right.modifiedAt
 }
 
-watch(
-  () => props.navigateRequest,
-  (request) => {
-    if (request) {
-      void load(request.path)
-      // 立即通知父级清空；否则切换页签时新页签会收到同一个残留请求而误跳转。
-      emit('navigate-consumed')
-    }
-  },
-)
+/** 本页签侧栏的跳转请求直接作用于本页签，隐藏页签保持自己的目录。 */
+function navigateTo(path: string): void {
+  void load(path)
+}
 
 onMounted(() => {
   void load(props.initialPath)
@@ -580,147 +572,160 @@ onMounted(() => {
 
 <template>
   <div class="file-pane">
-    <div class="toolbar">
-      <div class="actions">
-        <el-button :icon="FolderAdd" @click="openCreate('mkdir')">新建文件夹</el-button>
-        <el-button :icon="DocumentAdd" @click="openCreate('touch')">新建文件</el-button>
-        <el-button :icon="Upload" :loading="uploading" @click="pickUpload">上传</el-button>
-        <el-button
-          :icon="CopyDocument"
-          :disabled="!clipboard"
-          @click="paste"
-        >
-          粘贴{{ clipboard ? `（${clipboard.sources.length}）` : '' }}
-        </el-button>
-        <el-button :icon="Refresh" @click="load(currentPath)">刷新</el-button>
-      </div>
+    <div class="pane-body">
+      <!-- 每个文件页签渲染自己的侧栏：快速访问与目录树状态随页签独立 -->
+      <FileSidebar
+        v-if="sidebarVisible"
+        :roots="roots"
+        :home-path="homePath"
+        :current-path="currentPath"
+        @navigate="navigateTo"
+      />
 
-      <input ref="uploadInput" type="file" multiple class="hidden-input" @change="onUploadChange" />
-    </div>
-
-    <div class="path-bar">
-      <el-button text :disabled="!parentPath" @click="parentPath && load(parentPath)">
-        上一级
-      </el-button>
-
-      <el-breadcrumb separator="/" class="crumbs">
-        <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb.path">
-          <a class="crumb" @click.prevent="load(crumb.path)">{{ crumb.label }}</a>
-        </el-breadcrumb-item>
-      </el-breadcrumb>
-
-      <el-button size="small" :icon="Monitor" :disabled="!currentPath" @click="openTerminal(currentPath)">
-        打开终端
-      </el-button>
-
-      <el-button size="small" :icon="Position" @click="openJump">跳转</el-button>
-
-      <el-button
-        type="danger"
-        plain
-        size="small"
-        :disabled="selectedCount === 0"
-        @click="removeEntries(selection)"
-      >
-        删除选中（{{ selectedCount }}）
-      </el-button>
-    </div>
-
-    <div class="table-wrap">
-      <el-table
-        v-loading="loading"
-        :data="entries"
-        height="100%"
-        row-key="path"
-        @selection-change="onSelectionChange"
-      >
-        <el-table-column type="selection" width="44" />
-        <el-table-column prop="name" label="名称" min-width="260" sortable>
-          <template #default="{ row }">
-            <span
-              class="entry"
-              :class="{ openable: row.isDirectory || isTextFile(row.name) }"
-              @click.stop="openEntry(row)"
+      <div class="pane-content">
+        <div class="toolbar">
+          <div class="actions">
+            <el-button :icon="FolderAdd" @click="openCreate('mkdir')">新建文件夹</el-button>
+            <el-button :icon="DocumentAdd" @click="openCreate('touch')">新建文件</el-button>
+            <el-button :icon="Upload" :loading="uploading" @click="pickUpload">上传</el-button>
+            <el-button
+              :icon="CopyDocument"
+              :disabled="!clipboard"
+              @click="paste"
             >
-              <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
-                <Folder v-if="row.isDirectory" />
-                <Document v-else />
-              </el-icon>
-              <span class="entry-name">{{ row.name }}</span>
-              <el-tag v-if="row.isSymlink" size="small" type="info" effect="plain">链接</el-tag>
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="size" label="大小" width="110" sortable>
-          <template #default="{ row }">{{ row.isDirectory ? '—' : formatSize(row.size) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="modifiedAt"
-          label="修改时间"
-          width="190"
-          sortable
-          :sort-method="sortByModified"
-        >
-          <template #default="{ row }">{{ formatTime(row.modifiedAt) }}</template>
-        </el-table-column>
-        <el-table-column prop="mode" label="权限" width="120" />
-        <el-table-column label="操作" width="96" fixed="right" align="center">
-          <template #default="{ row }">
-            <!-- 阻止冒泡，避免点菜单时触发名称单击打开 -->
-            <div @click.stop>
-              <el-dropdown
-                trigger="click"
-                @command="(command: RowAction) => onRowAction(command, row)"
-              >
-                <el-button size="small" :icon="MoreFilled">操作</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item
-                      command="open"
-                      :disabled="!row.isDirectory && !isTextFile(row.name)"
-                    >
-                      打开
-                    </el-dropdown-item>
-                    <el-dropdown-item command="newtab" :disabled="!row.isDirectory">
-                      在新页签打开
-                    </el-dropdown-item>
-                    <el-dropdown-item command="terminal" :disabled="!row.isDirectory">
-                      打开终端
-                    </el-dropdown-item>
-                    <el-dropdown-item command="quick" :disabled="!row.isDirectory">
-                      添加到快速访问
-                    </el-dropdown-item>
-                    <el-dropdown-item
-                      command="edit"
-                      :disabled="row.isDirectory || !isTextFile(row.name)"
-                    >
-                      编辑文本
-                    </el-dropdown-item>
-                    <el-dropdown-item command="download" :disabled="row.isDirectory">
-                      下载
-                    </el-dropdown-item>
-                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                    <el-dropdown-item command="copy">复制</el-dropdown-item>
-                    <el-dropdown-item command="cut">剪切</el-dropdown-item>
-                    <el-dropdown-item command="delete" divided class="danger-item">
-                      删除
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </div>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
+              粘贴{{ clipboard ? `（${clipboard.sources.length}）` : '' }}
+            </el-button>
+            <el-button :icon="Refresh" @click="load(currentPath)">刷新</el-button>
+          </div>
 
-    <div class="status-bar">
-      <span>共 {{ entries.length }} 项</span>
-      <span v-if="clipboard" class="clipboard">
-        剪贴板：{{ clipboard.mode === 'copy' ? '复制' : '剪切' }} {{ clipboard.sources.length }} 项
-        <el-button text size="small" @click="filesClipboard.clear()">清空</el-button>
-      </span>
-      <span v-if="truncated" class="warning">目录条目过多，仅显示前 {{ entries.length }} 项</span>
+          <input ref="uploadInput" type="file" multiple class="hidden-input" @change="onUploadChange" />
+        </div>
+
+        <div class="path-bar">
+          <el-button text :disabled="!parentPath" @click="parentPath && load(parentPath)">
+            上一级
+          </el-button>
+
+          <el-breadcrumb separator="/" class="crumbs">
+            <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb.path">
+              <a class="crumb" @click.prevent="load(crumb.path)">{{ crumb.label }}</a>
+            </el-breadcrumb-item>
+          </el-breadcrumb>
+
+          <el-button size="small" :icon="Monitor" :disabled="!currentPath" @click="openTerminal(currentPath)">
+            打开终端
+          </el-button>
+
+          <el-button size="small" :icon="Position" @click="openJump">跳转</el-button>
+
+          <el-button
+            type="danger"
+            plain
+            size="small"
+            :disabled="selectedCount === 0"
+            @click="removeEntries(selection)"
+          >
+            删除选中（{{ selectedCount }}）
+          </el-button>
+        </div>
+
+        <div class="table-wrap">
+          <el-table
+            v-loading="loading"
+            :data="entries"
+            height="100%"
+            row-key="path"
+            @selection-change="onSelectionChange"
+          >
+            <el-table-column type="selection" width="44" />
+            <el-table-column prop="name" label="名称" min-width="260" sortable>
+              <template #default="{ row }">
+                <span
+                  class="entry"
+                  :class="{ openable: row.isDirectory || isTextFile(row.name) }"
+                  @click.stop="openEntry(row)"
+                >
+                  <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
+                    <Folder v-if="row.isDirectory" />
+                    <Document v-else />
+                  </el-icon>
+                  <span class="entry-name">{{ row.name }}</span>
+                  <el-tag v-if="row.isSymlink" size="small" type="info" effect="plain">链接</el-tag>
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="size" label="大小" width="110" sortable>
+              <template #default="{ row }">{{ row.isDirectory ? '—' : formatSize(row.size) }}</template>
+            </el-table-column>
+            <el-table-column
+              prop="modifiedAt"
+              label="修改时间"
+              width="190"
+              sortable
+              :sort-method="sortByModified"
+            >
+              <template #default="{ row }">{{ formatTime(row.modifiedAt) }}</template>
+            </el-table-column>
+            <el-table-column prop="mode" label="权限" width="120" />
+            <el-table-column label="操作" width="96" fixed="right" align="center">
+              <template #default="{ row }">
+                <!-- 阻止冒泡，避免点菜单时触发名称单击打开 -->
+                <div @click.stop>
+                  <el-dropdown
+                    trigger="click"
+                    @command="(command: RowAction) => onRowAction(command, row)"
+                  >
+                    <el-button size="small" :icon="MoreFilled">操作</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item
+                          command="open"
+                          :disabled="!row.isDirectory && !isTextFile(row.name)"
+                        >
+                          打开
+                        </el-dropdown-item>
+                        <el-dropdown-item command="newtab" :disabled="!row.isDirectory">
+                          在新页签打开
+                        </el-dropdown-item>
+                        <el-dropdown-item command="terminal" :disabled="!row.isDirectory">
+                          打开终端
+                        </el-dropdown-item>
+                        <el-dropdown-item command="quick" :disabled="!row.isDirectory">
+                          添加到快速访问
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          command="edit"
+                          :disabled="row.isDirectory || !isTextFile(row.name)"
+                        >
+                          编辑文本
+                        </el-dropdown-item>
+                        <el-dropdown-item command="download" :disabled="row.isDirectory">
+                          下载
+                        </el-dropdown-item>
+                        <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                        <el-dropdown-item command="copy">复制</el-dropdown-item>
+                        <el-dropdown-item command="cut">剪切</el-dropdown-item>
+                        <el-dropdown-item command="delete" divided class="danger-item">
+                          删除
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div class="status-bar">
+          <span>共 {{ entries.length }} 项</span>
+          <span v-if="clipboard" class="clipboard">
+            剪贴板：{{ clipboard.mode === 'copy' ? '复制' : '剪切' }} {{ clipboard.sources.length }} 项
+            <el-button text size="small" @click="filesClipboard.clear()">清空</el-button>
+          </span>
+          <span v-if="truncated" class="warning">目录条目过多，仅显示前 {{ entries.length }} 项</span>
+        </div>
+      </div>
     </div>
 
     <el-dialog v-model="editDialog" :title="editState.title" width="420px">
@@ -763,6 +768,21 @@ onMounted(() => {
   flex-direction: column;
   height: 100%;
   padding: 0 4px 12px;
+}
+
+/* 侧栏与文件内容并排；侧栏由 FileSidebar 自行控制宽度与分隔条 */
+.pane-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
 .toolbar {

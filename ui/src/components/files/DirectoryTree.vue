@@ -27,12 +27,12 @@ const props = defineProps<{
   roots: string[]
   /** 登录账号家目录，根列表为空时作为兜底根。 */
   homePath: string
-  /** 当前激活文件页签的目录，用于高亮与自动展开。 */
+  /** 所属文件页签的当前目录，用于高亮与自动展开。 */
   currentPath: string
 }>()
 
 const emit = defineEmits<{
-  /** 点击节点，请求右侧当前激活页签跳转到该目录。 */
+  /** 点击节点，请求所属文件页签跳转到该目录。 */
   (e: 'navigate', path: string): void
 }>()
 
