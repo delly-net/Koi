@@ -729,12 +729,19 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   (default `true`) or a non-Linux host returns 503, and a missing/unreadable `/proc` returns 503
   ProblemDetails. The collector never runs a shell or external command.
 - Static hosting: `Koi:StaticFiles:RootPath` (default `wwwroot`, relative paths resolve against the
-  content root) and `Koi:StaticFiles:Enabled` (default `true`). `UseKoiStaticFiles()` runs before
+  content root), `Koi:StaticFiles:Enabled` (default `true`) and `Koi:StaticFiles:Title` (default
+  `Koi Linux Web UI`). `UseKoiStaticFiles()` runs before
   the same-origin and session middleware so assets bypass the session lookup. When `index.html` is
   absent the app logs a warning and serves only the API. `MapKoiFallbacks()` maps `/api/{**path}`
   to 404 and returns `index.html` for GET/HEAD requests whose path has no extension, which supports
   Vue Router history mode while missing `.js`/`.css` files still return 404. `index.html` and
   `conf/setting.json` are served `no-cache`; `/assets/**` gets a one-year immutable cache.
+  When static hosting is active (`Enabled=true` and `index.html` exists), startup rewrites the
+  `title` property of `<RootPath>/conf/setting.json` to `Koi:StaticFiles:Title` (other fields are
+  preserved, the file is replaced atomically with its Unix mode kept, and the JSON is re-serialized
+  with 2-space indentation and unescaped Chinese). An empty/whitespace `Title` skips the rewrite; a
+  missing file, invalid JSON or write failure only logs a warning and startup continues. `Program.cs`
+  does not need changes because the rewrite happens inside `UseKoiStaticFiles()`.
 - External configuration: on Linux the app overlays `/etc/koi/appsettings.json` on the bundled
   `appsettings.json` / `appsettings.{Environment}.json`. If the file is missing at startup it is
   created from the bundled copy (directory `0755`, file `0644`, temp file + atomic rename) and then
@@ -837,7 +844,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   router is installed. A missing or invalid file falls back to same origin without blocking startup.
   `title` is applied to `document.title` by `applyPageTitle()` in `src/config/appConfig.ts`: a
   non-empty string overrides the title, while a missing / empty / non-string value keeps the
-  `index.html` default `Koi Linux Web UI` (the top-bar brand text is unaffected). After
+  `index.html` default `Koi Linux Web UI` (the top-bar brand text is unaffected). When the backend
+  hosts the SPA, startup overwrites this `title` with `Koi:StaticFiles:Title` (see the static
+  hosting bullet), so the backend configuration is the authoritative source in production. After
   `npm run build`, edit `ui/dist/conf/setting.json` to retarget the backend or rename the page
   without rebuilding. When the backend serves
   the SPA, this file is deliberately sent with `no-store` so edits take effect immediately.

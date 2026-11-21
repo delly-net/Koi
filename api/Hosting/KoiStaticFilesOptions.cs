@@ -15,4 +15,10 @@ public sealed class KoiStaticFilesOptions
     /// 目录中缺少 <c>index.html</c> 时自动降级为仅提供 API。
     /// </summary>
     public string RootPath { get; set; } = "wwwroot";
+
+    /// <summary>
+    /// 浏览器页面标题。静态文件托管生效时，启动阶段用该值覆盖前端
+    /// <c>conf/setting.json</c> 的 <c>title</c> 属性；空字符串表示跳过覆盖。
+    /// </summary>
+    public string Title { get; set; } = "Koi Linux Web UI";
 }
