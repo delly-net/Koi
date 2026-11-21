@@ -1,5 +1,6 @@
 {
   "baseUrl": "http://localhost:5000",
+  "title": "Koi Linux Web UI",
   "fileAssociations": {
     "text": [
       ".txt",

@@ -1,5 +1,6 @@
 {
   "baseUrl": "",
+  "title": "Koi Linux Web UI",
   "fileAssociations": {
     "text": [
       ".txt",

@@ -8,8 +8,8 @@ import {
 } from './editorFileTypes'
 
 /**
- * 应用运行时配置：由 public/conf/setting.json 提供，构建后可直接修改以切换后端地址，
- * 无需重新构建前端。配置在 main.ts 中先于路由安装加载。
+ * 应用运行时配置：由 public/conf/setting.json 提供，构建后可直接修改以切换后端地址
+ * 或页面标题，无需重新构建前端。配置在 main.ts 中先于路由安装加载。
  *
  * 文本文件关联规则与着色方案已改为由后端 SQLite 独立表 EditorFileTypes 维护，
  * setting.json 中的 fileAssociations.text 不再读取。
@@ -17,12 +17,16 @@ import {
 export interface AppConfig {
   /** 后端对外根地址（不含 /api）；空串表示同源。 */
   baseUrl?: string
+  /** 浏览器页面标题（document.title）；缺失、空串或非字符串时保持 index.html 的默认标题。 */
+  title?: string
 }
 
 /** 配置文件通过 HTTP 直接访问，不参与打包。 */
 const CONFIG_URL = '/conf/setting.json'
 /** 默认后端根地址：空串 = 同源（请求走相对路径 /api/...）。 */
 const DEFAULT_BACKEND_ROOT = ''
+/** 默认页面标题，与 index.html 的 <title> 保持一致（仅作空标题兜底）。 */
+export const DEFAULT_PAGE_TITLE = 'Koi Linux Web UI'
 /** 后端业务端点统一前缀（与 api/auth.ts 中的请求路径一致）。 */
 const API_PREFIX = '/api'
 
@@ -66,6 +70,27 @@ export function setBaseUrl(url: string): void {
 /** 获取后端根地址（不含 /api），供 WebSocket、静态资源等根路径端点复用。 */
 export function getBackendRoot(): string {
   return backendRoot
+}
+
+/**
+ * 应用运行时配置中的页面标题。
+ * 非空字符串写入 document.title；缺失、空串或类型不符时保持当前标题
+ * （index.html 的 <title> 即默认值，TS 侧不强制覆盖）。
+ */
+export function applyPageTitle(raw: unknown): void {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  if (typeof raw === 'string' && raw.trim()) {
+    document.title = raw.trim()
+    console.info(`[配置] 页面标题：${document.title}`)
+    return
+  }
+
+  if (!document.title) {
+    document.title = DEFAULT_PAGE_TITLE
+  }
 }
 
 /** 当前生效的后缀规则（副本，避免调用方修改内部状态）。 */
@@ -124,7 +149,7 @@ export function buildWebSocketUrl(path: string): string {
 }
 
 /**
- * 加载配置文件并应用 baseUrl。
+ * 加载配置文件并应用 baseUrl 与页面标题。
  * 加载失败、状态码非 2xx、字段缺失或类型不符时仅告警，保持同源默认值继续启动。
  */
 export async function loadAppConfig(): Promise<void> {
@@ -135,6 +160,7 @@ export async function loadAppConfig(): Promise<void> {
     }
 
     const config = (await response.json()) as AppConfig
+    applyPageTitle(config.title)
     if (typeof config.baseUrl === 'string') {
       setBaseUrl(config.baseUrl)
     } else {

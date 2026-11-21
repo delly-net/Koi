@@ -833,16 +833,21 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   would stretch it across the row). Keep new home entries on the same pattern: add label,
   description and icon to the module list of the matching group.
 - Frontend runtime config: `ui/public/conf/setting.json` (`baseUrl` = backend root without `/api`,
-  empty string = same origin) is loaded in `src/main.ts` before the router is installed. A missing
-  or invalid file falls back to same origin without blocking startup. After `npm run build`, edit
-  `ui/dist/conf/setting.json` to retarget the backend without rebuilding. When the backend serves
+  empty string = same origin; `title` = browser page title) is loaded in `src/main.ts` before the
+  router is installed. A missing or invalid file falls back to same origin without blocking startup.
+  `title` is applied to `document.title` by `applyPageTitle()` in `src/config/appConfig.ts`: a
+  non-empty string overrides the title, while a missing / empty / non-string value keeps the
+  `index.html` default `Koi Linux Web UI` (the top-bar brand text is unaffected). After
+  `npm run build`, edit `ui/dist/conf/setting.json` to retarget the backend or rename the page
+  without rebuilding. When the backend serves
   the SPA, this file is deliberately sent with `no-store` so edits take effect immediately.
   The former `fileAssociations.text` field is **deprecated and no longer read**: text associations
   and highlighting schemes now come from the backend SQLite table `EditorFileTypes` and are
   maintained by root in the text editor page (see the editor file-type bullet above). Files
   matching a rule open in the editor from the row menu `打开` / `编辑文本` or by clicking the name.
   The field may remain in existing `setting.json` files but has no effect. Production deploys replace
-  `dist/conf/setting.json` with `deploy/linux/conf/setting.json`, so keep both copies in sync.
+  `dist/conf/setting.json` with `deploy/linux/conf/setting.json` (or the `deploy/debian` copy), so
+  keep the three copies in sync (`baseUrl` aside).
 - Login page persistence (`ui/src/views/LoginView.vue` + `ui/src/utils/rememberedLogin.ts`): after a
   successful login the user name is always stored in `localStorage['koi.login.lastUserName']` and
   prefilled next time. The `记住密码` checkbox, when checked, stores the password as an encrypted
