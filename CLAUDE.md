@@ -52,11 +52,17 @@ are implemented.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
-(open / open in new tab / open terminal / edit / download / rename / copy / cut / delete) into a
+(open / open in new tab / open terminal / edit / run / download / rename / copy / cut / delete) into a
 single `操作` dropdown per row, so the action column stays narrow. Directories are opened by
 clicking the entry name or choosing `打开`; files listed in the configured text associations are
 opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; other files are
-downloaded via `下载` (double-click no longer opens entries). A directory row offers `打开终端`,
+downloaded via `下载` (double-click no longer opens entries). Non-directory entries whose name ends
+with `.sh` (case-insensitive) also offer `执行`: it asks the terminal store for a new tab whose cwd
+is the script's directory and whose one-shot command is `exec sh '<path>'` (POSIX single-quote
+escaped; paths containing control characters are rejected), switches to the `终端` tab, and the
+terminal pane sends that command once after `ready`. `exec` replaces the login shell, so when the
+script exits the server sends `exit` and closes the WebSocket; the tab is kept and shows the exited
+status, and a manual `重新连接` does not re-run the script. A directory row offers `打开终端`,
 and the path bar has an `打开终端` button (`Monitor` icon) for the current directory: both ask the
 terminal store (`ui/src/stores/terminal.ts`) for a new terminal tab with the directory as its
 working directory, then switch to the workspace `终端` tab. The terminal page consumes the request

@@ -16,6 +16,8 @@ interface TerminalTab {
   title: string
   /** 初始工作目录；空串表示账号家目录。 */
   cwd: string
+  /** 终端就绪后自动执行一次的命令；空串表示普通交互式 Shell。 */
+  command: string
 }
 
 const tabs = ref<TerminalTab[]>([])
@@ -35,13 +37,14 @@ function directoryLabel(path: string): string {
 
 /**
  * 新建一个终端标签；每个标签对应一条独立的 WebSocket 与 PTY。
- * cwd 来自文件管理「打开终端」，标题里同时标出目录名。
+ * cwd 来自文件管理「打开终端」，标题里同时标出目录名；
+ * command 来自文件管理「执行」，终端就绪后自动执行一次。
  */
-function createTab(cwd = ''): void {
+function createTab(cwd = '', command = ''): void {
   counter += 1
   const id = `terminal-${counter}-${Date.now()}`
   const title = cwd ? `终端 ${counter} · ${directoryLabel(cwd)}` : `终端 ${counter}`
-  tabs.value.push({ id, title, cwd })
+  tabs.value.push({ id, title, cwd, command })
   activeKey.value = id
 }
 
@@ -70,7 +73,7 @@ const terminal = useTerminalStore()
 
 // 终端标签可能在请求发出时尚未挂载（工作区按需挂载），setup 时先消费未处理的请求。
 const initialRequest = terminal.consume()
-createTab(initialRequest?.cwd ?? '')
+createTab(initialRequest?.cwd ?? '', initialRequest?.command ?? '')
 
 // 终端标签已打开时，文件管理等模块再次请求新页签走这里；消费后清空避免重复创建。
 watch(
@@ -82,7 +85,7 @@ watch(
 
     const consumed = terminal.consume()
     if (consumed) {
-      createTab(consumed.cwd)
+      createTab(consumed.cwd, consumed.command)
     }
   },
 )
@@ -228,7 +231,11 @@ onMounted(() => {
         :name="tab.id"
         :closable="tabs.length > 1"
       >
-        <TerminalPane :active="activeKey === tab.id" :cwd="tab.cwd" />
+        <TerminalPane
+          :active="activeKey === tab.id"
+          :cwd="tab.cwd"
+          :initial-command="tab.command"
+        />
       </el-tab-pane>
     </el-tabs>
 

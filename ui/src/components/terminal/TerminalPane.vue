@@ -14,6 +14,11 @@ const props = defineProps<{
   active: boolean
   /** 初始工作目录（绝对路径）；空串表示账号家目录。 */
   cwd?: string
+  /**
+   * 终端就绪后自动输入的一次性命令（文件管理「执行」.sh 脚本）。
+   * 仅在首次 ready 后发送，手动「重新连接」不会重复执行。
+   */
+  initialCommand?: string
 }>()
 
 type ConnectionStatus = 'connecting' | 'connected' | 'closed' | 'error'
@@ -30,6 +35,8 @@ let resizeObserver: ResizeObserver | null = null
 let dataSubscription: { dispose(): void } | null = null
 let resizeSubscription: { dispose(): void } | null = null
 let disposed = false
+/** 自动命令只发送一次：重连后回到普通登录 Shell，避免脚本被重复执行。 */
+let initialCommandSent = false
 
 onMounted(async () => {
   if (!hostRef.value) {
@@ -167,6 +174,13 @@ function handleMessage(message: TerminalServerMessage): void {
         send({ type: 'resize', cols: term.cols, rows: term.rows })
       }
       term?.focus()
+
+      // 文件管理「执行」.sh 脚本：就绪后输入一次命令；PTY 会缓冲输入，无需等待提示符。
+      const command = props.initialCommand?.trim() ?? ''
+      if (command && !initialCommandSent) {
+        initialCommandSent = true
+        send({ type: 'input', data: `${command}\r` })
+      }
       break
 
     case 'output':

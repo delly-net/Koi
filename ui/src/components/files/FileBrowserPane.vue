@@ -248,6 +248,38 @@ function openTerminal(directory: string): void {
   workspace.open('terminal')
 }
 
+/** 仅 `.sh` 脚本（不区分大小写）提供「执行」。 */
+function isShellScript(name: string): boolean {
+  return name.toLowerCase().endsWith('.sh')
+}
+
+/** POSIX 单引号转义：路径里的引号、空格等字符不会被 Shell 解释为附加命令。 */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * 执行 .sh 脚本：新建终端页签，初始工作目录为脚本所在目录，用 sh 执行脚本。
+ * `exec` 让脚本进程直接成为 PTY 子进程，脚本结束后 sh 退出、服务端关闭 WebSocket，
+ * 页签保留并显示「终端进程已退出」（不会重新回到交互式 Shell）。
+ */
+function runScript(row: FileEntry): void {
+  if (row.isDirectory || !isShellScript(row.name)) {
+    return
+  }
+
+  // 换行等控制字符会截断终端行输入，且不应出现在可执行路径中。
+  if (/[\u0000-\u001f\u007f]/.test(row.path)) {
+    ElMessage.warning('脚本路径包含控制字符，无法执行')
+    return
+  }
+
+  const slash = row.path.lastIndexOf('/')
+  const directory = slash > 0 ? row.path.slice(0, slash) : '/'
+  terminal.requestTab(directory, `exec sh ${shellQuote(row.path)}`)
+  workspace.open('terminal')
+}
+
 /** 把目录加入当前账号的快速访问列表；重复添加只提示不报错。 */
 async function addQuickAccess(row: FileEntry): Promise<void> {
   if (!row.isDirectory) {
@@ -282,6 +314,7 @@ type RowAction =
   | 'terminal'
   | 'quick'
   | 'edit'
+  | 'run'
   | 'download'
   | 'rename'
   | 'copy'
@@ -306,6 +339,9 @@ function onRowAction(command: RowAction, row: FileEntry): void {
       break
     case 'edit':
       openTextEditor(row)
+      break
+    case 'run':
+      runScript(row)
       break
     case 'download':
       downloadEntry(row)
@@ -698,6 +734,12 @@ onMounted(() => {
                           :disabled="row.isDirectory || !isTextFile(row.name)"
                         >
                           编辑文本
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          v-if="!row.isDirectory && isShellScript(row.name)"
+                          command="run"
+                        >
+                          执行
                         </el-dropdown-item>
                         <el-dropdown-item command="download" :disabled="row.isDirectory">
                           下载
