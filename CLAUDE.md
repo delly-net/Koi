@@ -33,7 +33,8 @@ are implemented.
   settings stored in the SQLite settings table and edited by root through a settings drawer,
   apt/dnf/yum/pacman/zypper-backed application management
   (installed/search/updates, a SQLite installed-application cache with paginated status
-  filtering, background jobs for install/remove/upgrade/refresh, and software source management)
+  filtering, background jobs for install/remove/upgrade/refresh, system update executed in a
+  terminal tab, and software source management)
   restricted to configured groups, nginx-backed configuration management (conf.d `*.conf`
   listing, UTF-8 read/write, `nginx -t` detection and `nginx -s reload` hot reload) restricted to
   configured groups, with its settings stored in the SQLite settings table and edited by root
@@ -677,6 +678,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   exit code and truncation flag, and `POST /jobs/{id}/cancel` kills the process tree. Jobs are
   not persisted: a Koi restart loses them, and finished jobs expire after
   `JobRetentionMinutes`. Logs are capped by `MaxLogBytes`; hitting the cap terminates the command.
+  The UI's `系统更新` button deliberately no longer creates an `upgrade-all` job: it confirms,
+  then asks `stores/terminal.ts` for a new terminal tab and sends one `exec` command built from a
+  fixed per-manager map (`apt-get upgrade -y` with `DEBIAN_FRONTEND=noninteractive` and the
+  `Dpkg::Options` pair, `dnf`/`yum upgrade -y`, `pacman -Syu --noconfirm`,
+  `zypper --non-interactive update -y`), prefixed with `sudo ` for non-root accounts (the password
+  is entered interactively in the PTY). `exec` replaces the login shell, so the tab disconnects
+  when the update ends and keeps its exit status; nothing is sent again on reconnect. This path
+  bypasses `PackageJobManager` and the service-root requirement, so the button is disabled only
+  while another package job is starting/running (package-manager lock) or when there are no
+  updates.
 - Package authorization mirrors services: every `/api/packages/**` endpoint requires a session
   and membership in the allowed groups (default `["sudo","wheel"]`, stored in the settings table
   rather than `appsettings.json`), resolved with `id -nG -- <user>`; uid 0 is always allowed. The
@@ -1021,10 +1032,17 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   install/remove job only reloads the current cache page. 安装 offers keyword search plus a
   direct exact-name install input, with per-row `安装`; 更新 shows current/new versions (current
   version may be `—` for dnf/yum), a `系统更新` button for all upgrades and a per-row `升级`.
+  `系统更新` follows the file manager's `.sh` execution chain: after a confirmation dialog it
+  opens a new terminal tab (home directory) through `stores/terminal.ts` and runs
+  `exec sudo <upgrade command>` (no `sudo` when `status.root` is true); the tab shows the update
+  and disconnects when it finishes, and switching back to the 更新 tab re-checks available updates.
+  It is not gated by `status.canModify`; install/remove/single-upgrade/refresh/sources keep the
+  job-log dialog.
   软件源 lists name, URI, apt suite/components, enabled state, backing file and a Koi-created tag,
   with `添加软件源`, per-row `启用`/`禁用` and `删除`; the add dialog collects name/URI and, for
   apt, suite/components, and for dnf/yum a GPG-check switch. pacman renders the source tab as
-  read-only. All package-changing actions confirm first and then open a job-log dialog that polls
+  read-only. All package-changing actions except `系统更新` confirm first and then open a job-log
+  dialog that polls
   `GET /api/packages/jobs/{id}` every second, appends incremental log slices (capped in the
   browser), offers `取消任务` while running, and refreshes the active tab when the job finishes;
   closing the dialog while a job runs keeps it running but stops showing live output until it

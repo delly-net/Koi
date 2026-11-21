@@ -30,10 +30,16 @@ import {
   type PackageUpdate,
 } from '@/api/packages'
 import { ApiError } from '@/api/http'
+import { useTerminalStore } from '@/stores/terminal'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 type PackageTab = 'installed' | 'install' | 'updates' | 'sources'
 
 const activeTab = ref<PackageTab>('installed')
+
+// 「系统更新」复用文件管理 .sh 一键执行的终端链路：请求新页签并自动执行命令。
+const terminal = useTerminalStore()
+const workspace = useWorkspaceStore()
 
 const status = ref<PackageStatus | null>(null)
 const statusLoading = ref(false)
@@ -682,18 +688,67 @@ async function upgradeOne(item: PackageUpdate): Promise<void> {
   )
 }
 
+/**
+ * 系统更新命令：与后端各包管理器 `UpgradeAll` 的参数保持一致。
+ * 只包含固定参数，不拼接任何用户输入。
+ */
+const SYSTEM_UPDATE_COMMANDS: Record<string, string> = {
+  apt: 'env DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true APT_LISTCHANGES_FRONTEND=none NEEDRESTART_MODE=a apt-get upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold',
+  dnf: 'dnf upgrade -y',
+  yum: 'yum upgrade -y',
+  pacman: 'pacman -Syu --noconfirm',
+  zypper: 'zypper --non-interactive update -y',
+}
+
+/**
+ * 构造终端首条命令：非 root 账号加 sudo（在终端内交互输入密码），
+ * 用 exec 替换登录 Shell，更新结束即断开连接（与 .sh 一键执行一致）。
+ * 管理器无法识别时返回空串。
+ */
+function buildSystemUpdateCommand(): string {
+  const manager = status.value?.manager ?? ''
+  const base = SYSTEM_UPDATE_COMMANDS[manager]
+  if (!base) {
+    return ''
+  }
+
+  const elevation = status.value?.root ? '' : 'sudo '
+  return `exec ${elevation}${base}`
+}
+
 async function upgradeAll(): Promise<void> {
   if (updates.value.length === 0) {
     ElMessage.info('当前没有可用更新')
     return
   }
 
-  await confirmAndRun(
-    'upgrade-all',
-    [],
-    '系统更新',
-    '确认执行系统更新？将升级全部可用更新，可能重启服务或要求重启主机。',
-  )
+  // 包管理器会持有系统锁：已有后台任务时先等待，避免锁冲突。
+  if (jobRunning.value || jobStarting.value) {
+    ElMessage.warning('已有包管理任务在执行，请完成后再进行系统更新')
+    return
+  }
+
+  const command = buildSystemUpdateCommand()
+  if (!command) {
+    ElMessage.warning('无法识别当前包管理器，请在终端中手动执行系统更新')
+    return
+  }
+
+  const elevation = status.value?.root ? '' : '需要 sudo 权限，请在终端提示时输入密码；'
+  try {
+    await ElMessageBox.confirm(
+      `确认执行系统更新？将在新的终端页签中运行 ${status.value?.displayName ?? '包管理器'} 升级命令，可能重启服务或要求重启主机。${elevation}更新结束后终端连接会断开，页签保留退出状态。`,
+      '系统更新',
+      { type: 'warning', confirmButtonText: '打开终端执行', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+
+  terminal.requestTab('', command)
+  workspace.open('terminal')
+  // 更新在终端中进行，返回「更新」页签时重新检查可用更新。
+  updatesLoaded.value = false
 }
 
 async function refreshIndex(): Promise<void> {
@@ -926,8 +981,8 @@ onBeforeUnmount(() => {
           </el-tag>
         </div>
         <span class="hint">
-          通过系统包管理器安装、卸载与更新软件并管理软件源；变更操作以服务账号执行，等同于宿主 root
-          权限，同一时间只执行一个任务。
+          通过系统包管理器安装、卸载与更新软件并管理软件源；安装、卸载、单个升级与软件源变更以服务账号执行，
+          同一时间只执行一个任务；「系统更新」会在新的终端页签中执行，等同于宿主 root 权限。
         </span>
       </div>
       <div class="actions">
@@ -987,7 +1042,7 @@ onBeforeUnmount(() => {
       show-icon
       :closable="false"
       title="Koi 服务未以 root 运行"
-      description="当前仅能查看软件包，安装、卸载、更新与软件源管理不可用。请以 root 运行 koi.service 后重试。"
+      description="安装、卸载、单个升级、刷新索引与软件源管理当前不可用，请以 root 运行 koi.service 后重试；「系统更新」仍可在终端页签中以 sudo 执行。"
     />
 
     <el-tabs v-if="status" v-model="activeTab" class="package-tabs">
@@ -1170,7 +1225,7 @@ onBeforeUnmount(() => {
             <el-button
               type="primary"
               :icon="Upload"
-              :disabled="actionsDisabled || updates.length === 0"
+              :disabled="updates.length === 0 || jobRunning || jobStarting"
               @click="upgradeAll"
             >
               系统更新
