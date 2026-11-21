@@ -13,7 +13,7 @@ import {
   Refresh,
   Upload,
 } from '@element-plus/icons-vue'
-import type { FileEntry } from '@/api/files'
+import type { FileEntry, UploadProgress } from '@/api/files'
 import {
   buildDownloadUrl,
   copyEntries,
@@ -76,6 +76,11 @@ const entries = ref<FileEntry[]>([])
 const truncated = ref(false)
 const loading = ref(false)
 const uploading = ref(false)
+/** 上传进度：当前文件的百分比与序号，只在 uploading 为 true 时渲染进度行。 */
+const uploadProgress = ref(0)
+const uploadFileName = ref('')
+const uploadIndex = ref(0)
+const uploadTotal = ref(0)
 const selection = ref<FileEntry[]>([])
 const uploadInput = ref<HTMLInputElement | null>(null)
 
@@ -519,6 +524,17 @@ function pickUpload(): void {
   uploadInput.value?.click()
 }
 
+/** 开始上传某个文件：记录序号与文件名，并把进度归零。 */
+function beginUploadFile(file: File, index: number): void {
+  uploadFileName.value = file.name
+  uploadIndex.value = index
+  uploadProgress.value = 0
+}
+
+function setUploadProgress(progress: UploadProgress): void {
+  uploadProgress.value = Math.min(100, Math.max(0, progress.percent))
+}
+
 async function onUploadChange(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
@@ -528,11 +544,13 @@ async function onUploadChange(event: Event): Promise<void> {
   }
 
   uploading.value = true
+  uploadTotal.value = files.length
   let succeeded = 0
   try {
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
+      beginUploadFile(file, index + 1)
       try {
-        await uploadFile(currentPath.value, file, false)
+        await uploadFile(currentPath.value, file, false, setUploadProgress)
         succeeded += 1
       } catch (error) {
         if (!(error instanceof ApiError) || error.status !== 409) {
@@ -550,8 +568,9 @@ async function onUploadChange(event: Event): Promise<void> {
           continue
         }
 
+        beginUploadFile(file, index + 1)
         try {
-          await uploadFile(currentPath.value, file, true)
+          await uploadFile(currentPath.value, file, true, setUploadProgress)
           succeeded += 1
         } catch (retryError) {
           showError(retryError)
@@ -560,6 +579,10 @@ async function onUploadChange(event: Event): Promise<void> {
     }
   } finally {
     uploading.value = false
+    uploadProgress.value = 0
+    uploadFileName.value = ''
+    uploadIndex.value = 0
+    uploadTotal.value = 0
   }
 
   if (succeeded > 0) {
@@ -635,6 +658,18 @@ onMounted(() => {
           </div>
 
           <input ref="uploadInput" type="file" multiple class="hidden-input" @change="onUploadChange" />
+        </div>
+
+        <!-- 上传进度：当前文件的百分比与序号，结束后自动隐藏 -->
+        <div v-if="uploading" class="upload-progress" role="status">
+          <span class="upload-progress-label" :title="uploadFileName">
+            正在上传（{{ uploadIndex }}/{{ uploadTotal }}）{{ uploadFileName }}
+          </span>
+          <el-progress
+            class="upload-progress-bar"
+            :percentage="uploadProgress"
+            :stroke-width="6"
+          />
         </div>
 
         <div class="path-bar">
@@ -840,6 +875,30 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 4px;
   margin-left: auto;
+}
+
+/* 上传进度行：占工具栏下方一行，文件名过长时省略，进度条自适应 */
+.upload-progress {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px 8px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.upload-progress-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-progress-bar {
+  flex: 1;
+  min-width: 160px;
 }
 
 .path-bar {

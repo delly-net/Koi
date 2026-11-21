@@ -214,43 +214,75 @@ export function saveTextFile(
   })
 }
 
-async function parseUploadError(response: Response): Promise<never> {
+/** 上传进度：`percent` 已夹紧在 0–100，`total` 未知时为 0。 */
+export interface UploadProgress {
+  loaded: number
+  total: number
+  percent: number
+}
+
+function parseUploadError(status: number, body: string): never {
   let problem: ProblemDetails = {}
   try {
-    problem = (await response.json()) as ProblemDetails
+    problem = JSON.parse(body) as ProblemDetails
   } catch {
     problem = {}
   }
 
-  throw new ApiError(
-    response.status,
-    problem.title ?? `上传失败（${response.status}）`,
-    problem.detail,
-  )
+  throw new ApiError(status, problem.title ?? `上传失败（${status}）`, problem.detail)
 }
 
-/** 上传单个文件；multipart 不能复用 request() 的 JSON 默认头，这里单独处理。 */
-export async function uploadFile(
+/**
+ * 上传单个文件。
+ * multipart 不能复用 request() 的 JSON 默认头；改用 XMLHttpRequest 是因为 fetch 无法
+ * 上报上传进度（`xhr.upload.onprogress`）。会话仍通过 Cookie（withCredentials）传递。
+ */
+export function uploadFile(
   directory: string,
   file: File,
   overwrite = false,
+  onProgress?: (progress: UploadProgress) => void,
 ): Promise<FileMutationResponse> {
   const form = new FormData()
   form.append('file', file, file.name)
 
   const suffix = overwrite ? '&overwrite=true' : ''
-  const response = await fetch(
-    buildApiUrl(`/api/files/upload?path=${encodePath(directory)}${suffix}`),
-    {
-      method: 'POST',
-      body: form,
-      credentials: 'include',
-    },
-  )
+  const url = buildApiUrl(`/api/files/upload?path=${encodePath(directory)}${suffix}`)
 
-  if (!response.ok) {
-    return parseUploadError(response)
-  }
+  return new Promise<FileMutationResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', url)
+    xhr.withCredentials = true
 
-  return (await response.json().catch(() => ({ ok: true }))) as FileMutationResponse
+    xhr.upload.addEventListener('progress', (event) => {
+      const total = event.lengthComputable ? event.total : 0
+      const percent = total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0
+      onProgress?.({ loaded: event.loaded, total, percent })
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let data: FileMutationResponse = { ok: true }
+        try {
+          data = JSON.parse(xhr.responseText) as FileMutationResponse
+        } catch {
+          data = { ok: true }
+        }
+
+        onProgress?.({ loaded: file.size, total: file.size, percent: 100 })
+        resolve(data)
+        return
+      }
+
+      try {
+        parseUploadError(xhr.status, xhr.responseText)
+      } catch (error) {
+        reject(error)
+      }
+    })
+
+    xhr.addEventListener('error', () => reject(new ApiError(0, '上传失败：网络错误')))
+    xhr.addEventListener('abort', () => reject(new ApiError(0, '上传已取消')))
+    xhr.send(form)
+  })
 }

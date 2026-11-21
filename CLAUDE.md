@@ -54,7 +54,11 @@ are implemented.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
 (open / open in new tab / open terminal / edit / run / download / rename / copy / cut / delete) into a
-single `操作` dropdown per row, so the action column stays narrow. Directories are opened by
+single `操作` dropdown per row, so the action column stays narrow. Uploading (the toolbar `上传`
+button accepts multiple files) shows an inline row under the toolbar with
+`正在上传（x/y）文件名` and an `el-progress` percentage bar for the current file; progress comes
+from `XMLHttpRequest.upload.onprogress` in `uploadFile()` (`fetch` cannot report upload progress,
+and the `/api/files/upload` multipart contract is unchanged). Directories are opened by
 clicking the entry name or choosing `打开`; files listed in the configured text associations are
 opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; other files are
 downloaded via `下载` (double-click no longer opens entries). Non-directory entries whose name ends
