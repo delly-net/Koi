@@ -871,8 +871,16 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   inactive panes with `display:none`. Ctrl/Cmd+S is handled by a CodeMirror keymap that emits
   `save` (there is no page-level keydown listener, to avoid double saves). The scheme is
   `nginx` for `source='nginx'` tabs and otherwise `resolveSyntaxScheme(tab.name)`; unmatched names
-  fall back to `plaintext`. Large files near `MaxTextFileBytes` may feel slow on first render. Its
-  top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="文本编辑设置"`)
+  fall back to `plaintext`. Large files near `MaxTextFileBytes` may feel slow on first render. The
+  toolbar's `打开` button (`FolderOpened`, left of `保存`) opens a 560 px path dialog: the input
+  accepts `/`-prefixed absolute paths and `~` / `~/...` (expanded through `GET /api/files/roots`;
+  other relative paths are rejected with a warning), and the appended `浏览...` button opens
+  `components/files/FilePickerDialog.vue`. That picker browses directories through the existing
+  `GET /api/files/list` (上一级 / 家目录 / breadcrumbs, directory click enters, file click selects,
+  double-click confirms) and only writes the chosen absolute path back into the input — the user
+  then confirms `打开`, so selecting never reads the file. Opening reuses `editor.openFile()`, so
+  an already-open path only activates its tab and read failures stay on the tab's error/retry UI.
+  Its top-right toolbar carries a circular `设置` gear (`Setting`, `aria-label="文本编辑设置"`)
   **only to root**: on mount the page silently calls `GET /api/editor/settings`; success shows the
   button, any failure (403 for non-root, 503 on non-Linux) hides it without an error toast. The
   click opens a 480 px `el-drawer` whose table edits each suffix row (`后缀名` + `着色方案`

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Setting } from '@element-plus/icons-vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
+import { FolderOpened, Setting } from '@element-plus/icons-vue'
 import { useEditorStore, type EditorTab } from '@/stores/editor'
+import { getFileRoots } from '@/api/files'
 import { getEditorSettings, saveEditorSettings, type EditorFileTypes } from '@/api/editor'
+import FilePickerDialog from '@/components/files/FilePickerDialog.vue'
 import { resolveSyntaxScheme, setEditorFileTypes } from '@/config/appConfig'
 import {
   SYNTAX_SCHEMES,
@@ -188,6 +190,135 @@ function onBeforeUnload(event: BeforeUnloadEvent): void {
   }
 }
 
+// ---------------- 按路径打开文件 ----------------
+const openDialog = ref(false)
+const openPath = ref('')
+const openLoading = ref(false)
+const openInput = ref<InputInstance | null>(null)
+const pickerVisible = ref(false)
+const pickerInitial = ref('')
+const homePath = ref('')
+
+function joinPath(directory: string, name: string): string {
+  return directory === '/' ? `/${name}` : `${directory.replace(/\/+$/, '')}/${name}`
+}
+
+/** 惰性读取家目录，用于展开 ~ 与确定文件浏览的起始目录；失败时保持为空。 */
+async function ensureHomePath(): Promise<string> {
+  if (homePath.value) {
+    return homePath.value
+  }
+
+  try {
+    const roots = await getFileRoots()
+    homePath.value = roots.home
+  } catch {
+    homePath.value = ''
+  }
+
+  return homePath.value
+}
+
+/**
+ * 把输入解析为绝对路径：`/` 开头原样使用，`~` 与 `~/...` 展开为家目录。
+ * 编辑页签以完整路径为键，因此相对路径没有可用的基准目录，直接提示用户。
+ */
+async function resolveOpenPath(raw: string): Promise<string | null> {
+  const value = raw.trim()
+  if (!value) {
+    ElMessage.warning('路径不能为空')
+    return null
+  }
+
+  if (value === '~' || value.startsWith('~/')) {
+    const home = await ensureHomePath()
+    if (!home) {
+      ElMessage.warning('尚未获取家目录，无法展开 ~')
+      return null
+    }
+
+    const rest = value.slice(1).replace(/^\/+/, '')
+    return rest ? joinPath(home, rest) : home
+  }
+
+  if (value.startsWith('/')) {
+    return value
+  }
+
+  ElMessage.warning('请输入以 / 开头的绝对路径，或使用 ~ 表示家目录')
+  return null
+}
+
+function openOpenDialog(): void {
+  openDialog.value = true
+  void ensureHomePath()
+  void nextTick(() => openInput.value?.focus())
+}
+
+/** 读取失败会被记录到新页签的 error 上，由编辑器内展示并提供重试。 */
+async function submitOpen(): Promise<void> {
+  if (openLoading.value) {
+    return
+  }
+
+  const target = await resolveOpenPath(openPath.value)
+  if (!target) {
+    return
+  }
+
+  openLoading.value = true
+  try {
+    openDialog.value = false
+    openPath.value = ''
+    await editor.openFile(target)
+  } finally {
+    openLoading.value = false
+  }
+}
+
+/** 浏览起点：当前输入路径的父目录；无法解析时交给浏览对话框使用家目录。 */
+async function pickerStartDirectory(): Promise<string> {
+  const value = openPath.value.trim()
+  if (!value) {
+    return ''
+  }
+
+  let resolved: string
+  if (value === '~' || value.startsWith('~/')) {
+    const home = await ensureHomePath()
+    if (!home) {
+      return ''
+    }
+
+    const rest = value.slice(1).replace(/^\/+/, '')
+    resolved = rest ? joinPath(home, rest) : home
+  } else if (value.startsWith('/')) {
+    resolved = value
+  } else {
+    return ''
+  }
+
+  resolved = resolved.replace(/\/+$/, '')
+  if (!resolved) {
+    return '/'
+  }
+
+  const index = resolved.lastIndexOf('/')
+  return index <= 0 ? '/' : resolved.slice(0, index)
+}
+
+async function openPicker(): Promise<void> {
+  pickerInitial.value = await pickerStartDirectory()
+  pickerVisible.value = true
+}
+
+/** 浏览对话框确认后只回填路径，由用户再点【打开】确认。 */
+function onPicked(path: string): void {
+  openPath.value = path
+  pickerVisible.value = false
+  void nextTick(() => openInput.value?.focus())
+}
+
 // ---------------- 文本编辑设置（仅 root） ----------------
 const settingsAvailable = ref(false)
 const settingsVisible = ref(false)
@@ -282,6 +413,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
       </el-tag>
 
       <div class="actions">
+        <el-button :icon="FolderOpened" :loading="openLoading" @click="openOpenDialog">
+          打开
+        </el-button>
         <el-button
           type="primary"
           :loading="activeTab?.saving ?? false"
@@ -355,6 +489,44 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <el-dialog
+      v-model="openDialog"
+      title="打开文件"
+      width="560px"
+      :close-on-click-modal="false"
+      @closed="openPath = ''"
+    >
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="文件路径">
+          <el-input
+            ref="openInput"
+            v-model="openPath"
+            clearable
+            placeholder="如 /etc/nginx/nginx.conf 或 ~/notes.txt"
+            @keyup.enter="submitOpen"
+          >
+            <template #append>
+              <el-button :icon="FolderOpened" @click="openPicker">浏览...</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+      </el-form>
+      <div class="open-hint">
+        支持 / 开头的绝对路径，以及 ~（家目录）与 ~/子目录；可访问范围仍由登录用户的系统权限与文件管理允许根决定。
+      </div>
+      <template #footer>
+        <el-button @click="openDialog = false">取消</el-button>
+        <el-button type="primary" :loading="openLoading" @click="submitOpen">打开</el-button>
+      </template>
+    </el-dialog>
+
+    <FilePickerDialog
+      v-model="pickerVisible"
+      :initial-path="pickerInitial"
+      :home-path="homePath"
+      @select="onPicked"
+    />
 
     <el-drawer
       v-model="settingsVisible"
@@ -484,6 +656,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload)
 .form-hint {
   width: 100%;
   margin-top: 4px;
+  color: #8a919f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.open-hint {
   color: #8a919f;
   font-size: 12px;
   line-height: 1.6;
