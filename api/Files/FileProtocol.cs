@@ -18,6 +18,9 @@ public static class FileErrorCodes
     public const string IoError = "io_error";
     public const string HelperFailed = "helper_failed";
     public const string Timeout = "timeout";
+
+    /// <summary>复制/移动被用户取消（辅助进程已终止）。</summary>
+    public const string Cancelled = "cancelled";
 }
 
 /// <summary>主进程 → 辅助进程的单次操作请求。</summary>
@@ -56,6 +59,9 @@ public sealed record FileHelperRequest
 
     /// <summary>允许访问的根目录（辅助进程二次校验，纵深防御）。</summary>
     public string[]? Roots { get; init; }
+
+    /// <summary>复制/移动的进度标识；非空时辅助进程在最终响应帧之前写入进度帧。</summary>
+    public string? OperationId { get; init; }
 }
 
 /// <summary>目录条目的传输结构。</summary>
@@ -92,6 +98,12 @@ public sealed record FileHelperResponse
 
     /// <summary>文件修改时间（Unix 毫秒），读取/保存文本后回传给前端做冲突检测。</summary>
     public long? ModifiedAt { get; init; }
+
+    /// <summary>
+    /// 复制/移动的进度帧：非空表示这是一条中间帧而非最终结果。
+    /// 只在 <c>copy</c>/<c>move</c> 且请求带 <c>operationId</c> 时出现。
+    /// </summary>
+    public FileTransferProgressPayload? Progress { get; init; }
 
     public static FileHelperResponse Success() => new() { Ok = true };
 
@@ -156,6 +168,21 @@ public static class FileProtocol
         FileHelperResponse response,
         CancellationToken cancellationToken) =>
         WriteFramedJsonAsync(stream, JsonSerializer.SerializeToUtf8Bytes(response, Json), cancellationToken);
+
+    /// <summary>
+    /// 同步写入一个响应/进度帧，供辅助进程在分块复制循环中调用（避免每块都切换异步状态机）。
+    /// 写入后立即刷新，主进程才能及时读到进度。
+    /// </summary>
+    public static void WriteResponseHeader(Stream stream, FileHelperResponse response)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(response, Json);
+        var header = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(header, json.Length);
+
+        stream.Write(header);
+        stream.Write(json);
+        stream.Flush();
+    }
 
     public static async Task<FileHelperResponse?> ReadResponseHeaderAsync(
         Stream stream,

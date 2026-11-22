@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
 import {
   CopyDocument,
@@ -13,12 +13,20 @@ import {
   Refresh,
   Upload,
 } from '@element-plus/icons-vue'
-import type { FileEntry, UploadProgress } from '@/api/files'
+import type {
+  FileEntry,
+  FileMutationResponse,
+  FileTransferPhase,
+  FileTransferProgress,
+  UploadProgress,
+} from '@/api/files'
 import {
   buildDownloadUrl,
+  cancelFileTransfer,
   copyEntries,
   createFile,
   deleteEntries,
+  getFileTransferProgress,
   listFiles,
   makeDirectory,
   moveEntries,
@@ -29,7 +37,7 @@ import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
 import FileSidebar from '@/components/files/FileSidebar.vue'
 import { useEditorStore } from '@/stores/editor'
-import { useFilesClipboardStore } from '@/stores/filesClipboard'
+import { type FileClipboard, useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
 import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -84,6 +92,19 @@ const uploadTotal = ref(0)
 const selection = ref<FileEntry[]>([])
 const uploadInput = ref<HTMLInputElement | null>(null)
 
+/** 粘贴进度：复制/移动期间显示内联进度行，POST 返回后立即隐藏。 */
+const transferActive = ref(false)
+const transferMode = ref<'copy' | 'move'>('copy')
+const transferPhase = ref<FileTransferPhase>('scanning')
+const transferBytesDone = ref(0)
+const transferBytesTotal = ref(0)
+const transferEntriesDone = ref(0)
+const transferEntriesTotal = ref(0)
+const transferCurrentName = ref('')
+const transferCancelLoading = ref(false)
+let transferOperationId = ''
+let transferTimer: number | undefined
+
 /** 剪贴板来自共享 store，因此在其它文件页签复制的条目本页签也能直接粘贴。 */
 const clipboard = computed(() => filesClipboard.clipboard)
 
@@ -113,6 +134,40 @@ const breadcrumbs = computed<Crumb[]>(() => {
 })
 
 const selectedCount = computed(() => selection.value.length)
+
+/** 已完成比例：优先按字节，纯目录/符号链接场景回退条目数。 */
+const transferPercent = computed(() => {
+  if (transferBytesTotal.value > 0) {
+    return Math.min(100, Math.round((transferBytesDone.value / transferBytesTotal.value) * 100))
+  }
+
+  if (transferEntriesTotal.value > 0) {
+    return Math.min(100, Math.round((transferEntriesDone.value / transferEntriesTotal.value) * 100))
+  }
+
+  return 0
+})
+
+/** 统计阶段或总数未知时显示不确定进度条，避免误导为 0%。 */
+const transferIndeterminate = computed(
+  () =>
+    transferPhase.value === 'scanning' ||
+    (transferBytesTotal.value === 0 && transferEntriesTotal.value === 0),
+)
+
+const transferLabel = computed(() => {
+  const action = transferMode.value === 'move' ? '剪切粘贴' : '粘贴'
+  if (transferPhase.value === 'scanning') {
+    return `正在统计待${action}的内容（已扫描 ${transferEntriesDone.value} 项）`
+  }
+
+  const progress =
+    transferBytesTotal.value > 0
+      ? `${formatSize(transferBytesDone.value)} / ${formatSize(transferBytesTotal.value)}`
+      : `${transferEntriesDone.value} / ${transferEntriesTotal.value} 项`
+  const current = transferCurrentName.value ? ` ${transferCurrentName.value}` : ''
+  return `正在${action}（${progress}）${current}`
+})
 
 function showError(error: unknown): void {
   if (error instanceof ApiError) {
@@ -456,33 +511,135 @@ function setClipboard(rows: FileEntry[], mode: 'copy' | 'cut'): void {
   ElMessage.success(`已${mode === 'copy' ? '复制' : '剪切'} ${rows.length} 项`)
 }
 
-async function transfer(
-  mode: 'copy' | 'cut',
-  sources: string[],
-  target: string,
-  overwrite: boolean,
-): Promise<void> {
-  if (mode === 'copy') {
-    await copyEntries(sources, target, overwrite)
+/**
+ * 生成客户端操作标识：优先 `crypto.randomUUID()`（安全上下文），
+ * 否则回退到随机字节的十六进制串，满足后端的 `^[A-Za-z0-9-]{8,64}$`。
+ */
+function newTransferId(): string {
+  const cryptoApi = window.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return cryptoApi.randomUUID()
+  }
+
+  const bytes = new Uint8Array(16)
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    cryptoApi.getRandomValues(bytes)
   } else {
-    await moveEntries(sources, target, overwrite)
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256)
+    }
+  }
+
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function stopTransferPolling(): void {
+  if (transferTimer !== undefined) {
+    window.clearInterval(transferTimer)
+    transferTimer = undefined
+  }
+}
+
+function applyTransferProgress(progress: FileTransferProgress): void {
+  transferPhase.value = progress.phase
+  transferBytesDone.value = progress.bytesDone
+  transferBytesTotal.value = progress.bytesTotal
+  transferEntriesDone.value = progress.entriesDone
+  transferEntriesTotal.value = progress.entriesTotal
+  transferCurrentName.value = progress.currentName ?? ''
+}
+
+/** 轮询期间的操作标识可能已切换；只应用当前操作的结果，丢弃过期响应。 */
+async function refreshTransferProgress(): Promise<void> {
+  const operationId = transferOperationId
+  if (!transferActive.value || !operationId) {
+    return
+  }
+
+  try {
+    const progress = await getFileTransferProgress(operationId)
+    if (!transferActive.value || transferOperationId !== operationId) {
+      return
+    }
+
+    applyTransferProgress(progress)
+  } catch {
+    // 首次轮询可能早于后端登记操作而得到 404，也可能是 403/503。
+    // 这里保持轮询直到 POST 返回（endTransfer 停止）：最终结果与错误由 POST 决定。
+  }
+}
+
+function beginTransfer(mode: 'copy' | 'move', operationId: string): void {
+  transferOperationId = operationId
+  transferMode.value = mode
+  transferActive.value = true
+  transferCancelLoading.value = false
+  transferPhase.value = 'scanning'
+  transferBytesDone.value = 0
+  transferBytesTotal.value = 0
+  transferEntriesDone.value = 0
+  transferEntriesTotal.value = 0
+  transferCurrentName.value = ''
+
+  stopTransferPolling()
+  void refreshTransferProgress()
+  transferTimer = window.setInterval(() => {
+    void refreshTransferProgress()
+  }, 500)
+}
+
+function endTransfer(): void {
+  stopTransferPolling()
+  transferActive.value = false
+  transferCancelLoading.value = false
+  transferOperationId = ''
+  transferCurrentName.value = ''
+}
+
+/** 发起一次复制/移动并全程显示进度；取消时后端返回 ok=false、cancelled=true。 */
+async function startTransfer(
+  clipboardValue: FileClipboard,
+  overwrite: boolean,
+): Promise<FileMutationResponse> {
+  const operationId = newTransferId()
+  const mode = clipboardValue.mode === 'cut' ? 'move' : 'copy'
+  beginTransfer(mode, operationId)
+
+  try {
+    return mode === 'move'
+      ? await moveEntries(clipboardValue.sources, currentPath.value, overwrite, operationId)
+      : await copyEntries(clipboardValue.sources, currentPath.value, overwrite, operationId)
+  } finally {
+    endTransfer()
+  }
+}
+
+/** 取消当前粘贴；实际停止发生在后端终止辅助进程之后。 */
+async function cancelPaste(): Promise<void> {
+  const operationId = transferOperationId
+  if (!operationId || transferCancelLoading.value) {
+    return
+  }
+
+  transferCancelLoading.value = true
+  try {
+    await cancelFileTransfer(operationId)
+  } catch (error) {
+    showError(error)
+    transferCancelLoading.value = false
   }
 }
 
 /** 粘贴到当前页签所在目录；来源可以是在其它页签中复制的条目。 */
 async function paste(): Promise<void> {
   const clipboardValue = filesClipboard.clipboard
-  if (!clipboardValue) {
+  if (!clipboardValue || transferActive.value) {
     return
   }
 
+  let result: FileMutationResponse | undefined
   try {
-    await transfer(
-      clipboardValue.mode,
-      clipboardValue.sources,
-      currentPath.value,
-      false,
-    )
+    result = await startTransfer(clipboardValue, false)
   } catch (error) {
     if (error instanceof ApiError && error.status === 409) {
       try {
@@ -496,12 +653,7 @@ async function paste(): Promise<void> {
       }
 
       try {
-        await transfer(
-          clipboardValue.mode,
-          clipboardValue.sources,
-          currentPath.value,
-          true,
-        )
+        result = await startTransfer(clipboardValue, true)
       } catch (retryError) {
         showError(retryError)
         return
@@ -510,6 +662,16 @@ async function paste(): Promise<void> {
       showError(error)
       return
     }
+  }
+
+  if (!result) {
+    return
+  }
+
+  if (result.cancelled) {
+    ElMessage.info('粘贴已取消，已复制的条目会保留')
+    await load(currentPath.value)
+    return
   }
 
   if (clipboardValue.mode === 'cut') {
@@ -627,6 +789,16 @@ function navigateTo(path: string): void {
 onMounted(() => {
   void load(props.initialPath)
 })
+
+onBeforeUnmount(() => {
+  stopTransferPolling()
+  if (transferActive.value && transferOperationId) {
+    const operationId = transferOperationId
+    transferActive.value = false
+    // 关闭文件页签时尽力取消，避免复制在后台无人可见地继续。
+    void cancelFileTransfer(operationId).catch(() => {})
+  }
+})
 </script>
 
 <template>
@@ -650,6 +822,7 @@ onMounted(() => {
             <el-button
               :icon="CopyDocument"
               :disabled="!clipboard"
+              :loading="transferActive"
               @click="paste"
             >
               粘贴{{ clipboard ? `（${clipboard.sources.length}）` : '' }}
@@ -670,6 +843,20 @@ onMounted(() => {
             :percentage="uploadProgress"
             :stroke-width="6"
           />
+        </div>
+
+        <!-- 粘贴进度：统计阶段为不确定进度，复制阶段显示真实字节百分比与当前文件 -->
+        <div v-if="transferActive" class="upload-progress" role="status" aria-live="polite">
+          <span class="upload-progress-label" :title="transferLabel">{{ transferLabel }}</span>
+          <el-progress
+            class="upload-progress-bar"
+            :percentage="transferPercent"
+            :indeterminate="transferIndeterminate"
+            :stroke-width="6"
+          />
+          <el-button size="small" :loading="transferCancelLoading" @click="cancelPaste">
+            取消
+          </el-button>
         </div>
 
         <div class="path-bar">

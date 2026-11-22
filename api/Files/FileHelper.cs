@@ -109,7 +109,15 @@ public static class FileHelper
                 return;
             }
 
-            var result = await FileOperations.ExecuteAsync(request, input, CancellationToken.None);
+            // 复制/移动且请求带进度标识时，在最终响应帧之前写入若干进度帧。
+            // 其余操作不产生中间帧，下游读取方仍按「一帧结果」处理。
+            HelperTransferProgressWriter? progress = null;
+            if (request.Op is "copy" or "move" && !string.IsNullOrEmpty(request.OperationId))
+            {
+                progress = new HelperTransferProgressWriter(output);
+            }
+
+            var result = await FileOperations.ExecuteAsync(request, input, CancellationToken.None, progress);
             await FileProtocol.WriteResponseHeaderAsync(output, result, CancellationToken.None);
         }
         catch (Exception ex)

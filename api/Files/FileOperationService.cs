@@ -17,6 +17,23 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         RunAsync(request, uploadContent: null, downloadOutput: null, onDownloadHeader: null, cancellationToken);
 
     /// <summary>
+    /// 执行带进度的复制/移动：<paramref name="operation"/> 非空时消费辅助进程的进度帧，
+    /// 并允许通过取消令牌终止辅助进程。
+    /// </summary>
+    public Task<FileHelperResponse> ExecuteAsync(
+        FileHelperRequest request,
+        FileTransferOperation? operation,
+        CancellationToken cancellationToken) =>
+        RunAsync(
+            request,
+            uploadContent: null,
+            downloadOutput: null,
+            onDownloadHeader: null,
+            cancellationToken,
+            maxDownloadBytes: null,
+            operation);
+
+    /// <summary>
     /// 读取在线编辑的文本：以下载模式读取原始字节到内存，超过 <paramref name="maxBytes"/> 时
     /// 立即终止辅助进程并返回 <c>too_large</c>，避免子进程阻塞在写满的管道上。
     /// </summary>
@@ -68,7 +85,8 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         Stream? downloadOutput,
         Func<FileHelperResponse, Task>? onDownloadHeader,
         CancellationToken cancellationToken,
-        long? maxDownloadBytes = null)
+        long? maxDownloadBytes = null,
+        FileTransferOperation? operation = null)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -80,8 +98,18 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         // 超时按操作类型分级：目录列举、递归传输与流式上传/下载各有独立上限，
         // 流式操作按「有数据流动即续期」计算空闲超时，避免慢客户端被固定墙钟误杀。
         var policy = ResolvePolicy(request, settings.Current);
-        using var timeout = new OperationTimeout(policy.Absolute, policy.Idle, cancellationToken);
+
+        // 复制/移动可被用户取消：取消令牌与请求令牌一起参与超时组合，
+        // 取消时同时终止辅助进程（管道关闭使读取立即结束）。
+        using var operationLink = operation is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, operation.CancellationToken);
+        using var timeout = new OperationTimeout(
+            policy.Absolute,
+            policy.Idle,
+            operationLink?.Token ?? cancellationToken);
         using var process = StartHelperProcess();
+        operation?.AttachHelper(() => Kill(process));
 
         var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
         var startedAt = Stopwatch.GetTimestamp();
@@ -101,26 +129,57 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
             await process.StandardInput.BaseStream.FlushAsync(timeout.Token);
             process.StandardInput.Close();
 
-            FileHelperResponse? response;
-            try
+            // 复制/移动会在最终响应帧之前写入若干进度帧；其余操作只有一帧。
+            FileHelperResponse? response = null;
+            while (true)
             {
-                response = await FileProtocol.ReadResponseHeaderAsync(
-                    process.StandardOutput.BaseStream,
-                    timeout.Token);
-            }
-            catch (FileProtocolException ex)
-            {
-                // 帧非法时负载未读，必须终止子进程，否则它会阻塞在写满的管道上。
-                Kill(process);
-                await WaitForExitAsync(process, timeout.Token);
-                logger.LogWarning(ex, "文件辅助进程响应帧非法：op={Op}", request.Op);
-                return FileHelperResponse.Failure(
-                    FileErrorCodes.HelperFailed,
-                    "文件辅助进程返回的数据不合法，操作已终止。");
+                FileHelperResponse? frame;
+                try
+                {
+                    frame = await FileProtocol.ReadResponseHeaderAsync(
+                        process.StandardOutput.BaseStream,
+                        timeout.Token);
+                }
+                catch (FileProtocolException ex)
+                {
+                    // 帧非法时负载未读，必须终止子进程，否则它会阻塞在写满的管道上。
+                    Kill(process);
+                    await WaitForExitAsync(process, timeout.Token);
+                    logger.LogWarning(ex, "文件辅助进程响应帧非法：op={Op}", request.Op);
+                    return FileHelperResponse.Failure(
+                        FileErrorCodes.HelperFailed,
+                        "文件辅助进程返回的数据不合法，操作已终止。");
+                }
+
+                if (frame is null)
+                {
+                    response = null;
+                    break;
+                }
+
+                if (frame.Progress is not null)
+                {
+                    operation?.Report(frame.Progress);
+                    continue;
+                }
+
+                response = frame;
+                break;
             }
 
             if (response is null)
             {
+                // 取消时辅助进程被终止，管道关闭会表现为没有最终帧。
+                if (operation?.CancellationRequested == true)
+                {
+                    if (!process.HasExited)
+                    {
+                        Kill(process);
+                    }
+
+                    return FileHelperResponse.Failure(FileErrorCodes.Cancelled, "粘贴已取消。");
+                }
+
                 // 没有读到有效帧：若子进程仍在运行，先终止再等待，避免永久阻塞。
                 var wasRunning = !process.HasExited;
                 if (wasRunning)
@@ -166,6 +225,19 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
 
             await WaitForExitAsync(process, timeout.Token);
             return response;
+        }
+        catch (OperationCanceledException) when (operation?.CancellationRequested == true)
+        {
+            Kill(process);
+            logger.LogInformation("文件复制/移动已取消：op={Op}, operation={Id}", request.Op, operation!.Id);
+            return FileHelperResponse.Failure(FileErrorCodes.Cancelled, "粘贴已取消。");
+        }
+        catch (Exception ex) when (operation?.CancellationRequested == true && ex is IOException or ObjectDisposedException)
+        {
+            // 取消时终止辅助进程会关闭管道，读取可能以 IO 异常结束。
+            Kill(process);
+            logger.LogInformation("文件复制/移动已取消：op={Op}, operation={Id}", request.Op, operation!.Id);
+            return FileHelperResponse.Failure(FileErrorCodes.Cancelled, "粘贴已取消。");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

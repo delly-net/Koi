@@ -47,6 +47,34 @@ export interface FileQuickAccessAddResponse {
 
 export interface FileMutationResponse {
   ok: boolean
+  /** 仅粘贴被用户取消时为 true（HTTP 200）；已复制的条目会保留。 */
+  cancelled?: boolean
+}
+
+/** 复制/移动的进度阶段：统计 → 复制/移动 → 完成/取消/失败。 */
+export type FileTransferPhase = 'scanning' | 'transferring' | 'done' | 'cancelled' | 'failed'
+
+/** 粘贴进度快照；由主轮询接口返回，仅发起操作的账号可读取。 */
+export interface FileTransferProgress {
+  operationId: string
+  mode: 'copy' | 'move'
+  phase: FileTransferPhase
+  bytesDone: number
+  bytesTotal: number
+  entriesDone: number
+  entriesTotal: number
+  currentName: string | null
+  cancelled: boolean
+  completed: boolean
+  failed: boolean
+  message: string | null
+}
+
+export interface FileTransferCancelResponse {
+  ok: boolean
+  /** false 表示操作已结束，取消未生效。 */
+  cancelled: boolean
+  completed: boolean
 }
 
 /** 文件管理配置（存储于 SQLite 通用配置表，仅 root 可读写）。 */
@@ -165,26 +193,48 @@ export function deleteEntries(paths: string[], recursive: boolean): Promise<File
   })
 }
 
+/**
+ * 复制条目；`operationId` 用于在请求未返回时并行轮询进度并可中途取消。
+ * 不带时保持既有的无进度同步行为。
+ */
 export function copyEntries(
   sources: string[],
   target: string,
   overwrite = false,
+  operationId?: string,
 ): Promise<FileMutationResponse> {
   return request<FileMutationResponse>('/api/files/copy', {
     method: 'POST',
-    body: JSON.stringify({ sources, target, overwrite }),
+    body: JSON.stringify({ sources, target, overwrite, operationId }),
   })
 }
 
+/** 移动条目；进度与取消语义同 {@link copyEntries}。 */
 export function moveEntries(
   sources: string[],
   target: string,
   overwrite = false,
+  operationId?: string,
 ): Promise<FileMutationResponse> {
   return request<FileMutationResponse>('/api/files/move', {
     method: 'POST',
-    body: JSON.stringify({ sources, target, overwrite }),
+    body: JSON.stringify({ sources, target, overwrite, operationId }),
   })
+}
+
+/** 读取粘贴进度；操作不存在、已过期或不属于当前账号时返回 404。 */
+export function getFileTransferProgress(operationId: string): Promise<FileTransferProgress> {
+  return request<FileTransferProgress>(
+    `/api/files/transfer-progress/${encodeURIComponent(operationId)}`,
+  )
+}
+
+/** 取消粘贴：终止辅助进程，已复制的条目保留。 */
+export function cancelFileTransfer(operationId: string): Promise<FileTransferCancelResponse> {
+  return request<FileTransferCancelResponse>(
+    `/api/files/transfer-progress/${encodeURIComponent(operationId)}/cancel`,
+    { method: 'POST' },
+  )
 }
 
 /** 下载地址：由浏览器直接发起 GET，会话 Cookie 随同源请求自动携带。 */

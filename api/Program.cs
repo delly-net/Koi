@@ -66,6 +66,8 @@ builder.Services.AddSingleton<TerminalSessionManager>();
 // 文件管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
 builder.Services.AddSingleton<FileSettingsService>();
 builder.Services.AddSingleton<FileOperationService>();
+// 复制/移动的内存进度登记表：客户端 operationId 用于同步 POST 期间并行轮询进度与取消。
+builder.Services.AddSingleton<FileTransferProgressRegistry>();
 // 快速访问目录按登录账号保存在 SQLite 的 FileQuickAccess 表。
 builder.Services.AddSingleton<FileQuickAccessService>();
 // 文本编辑后缀名与着色方案来自 SQLite 独立表 EditorFileTypes（替代旧的 FeatureConfigs 文本扩展名）。

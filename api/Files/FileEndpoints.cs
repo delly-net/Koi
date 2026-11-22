@@ -33,11 +33,16 @@ public static class FileEndpoints
         group.MapPost("/rename", RenameAsync);
         group.MapPost("/delete", DeleteAsync);
         group.MapPost("/copy", (HttpContext context, FileTransferRequest? request,
-                FileOperationService service, FileSettingsService settingsService, CancellationToken cancellationToken) =>
-            TransferAsync(context, request, service, settingsService, move: false, cancellationToken));
+                FileOperationService service, FileSettingsService settingsService,
+                FileTransferProgressRegistry progressRegistry, CancellationToken cancellationToken) =>
+            TransferAsync(context, request, service, settingsService, progressRegistry, move: false, cancellationToken));
         group.MapPost("/move", (HttpContext context, FileTransferRequest? request,
-                FileOperationService service, FileSettingsService settingsService, CancellationToken cancellationToken) =>
-            TransferAsync(context, request, service, settingsService, move: true, cancellationToken));
+                FileOperationService service, FileSettingsService settingsService,
+                FileTransferProgressRegistry progressRegistry, CancellationToken cancellationToken) =>
+            TransferAsync(context, request, service, settingsService, progressRegistry, move: true, cancellationToken));
+        // 复制/移动进度与取消：operationId 由客户端生成，只允许发起账号访问。
+        group.MapGet("/transfer-progress/{operationId}", GetTransferProgress);
+        group.MapPost("/transfer-progress/{operationId}/cancel", CancelTransfer);
         group.MapPost("/upload", UploadAsync);
         group.MapGet("/download", DownloadAsync);
         group.MapGet("/text", ReadTextAsync);
@@ -349,6 +354,7 @@ public static class FileEndpoints
         FileTransferRequest? request,
         FileOperationService service,
         FileSettingsService settingsService,
+        FileTransferProgressRegistry progressRegistry,
         bool move,
         CancellationToken cancellationToken)
     {
@@ -379,16 +385,113 @@ public static class FileEndpoints
             sources.Add(normalized);
         }
 
-        var response = await service.ExecuteAsync(
-            NewRequest(identity!, options, move ? "move" : "copy") with
+        // operationId 可选：不带时保持既有的无进度同步行为。
+        FileTransferOperation? operation = null;
+        if (!string.IsNullOrEmpty(request.OperationId))
+        {
+            if (!FileTransferProgressRegistry.IsValidOperationId(request.OperationId))
             {
-                Sources = sources.ToArray(),
-                Target = target,
-                Overwrite = request.Overwrite,
-            },
-            cancellationToken);
+                return BadRequest("操作标识不合法", "operationId 只能由字母、数字与连字符组成，长度 8–64。");
+            }
+
+            if (!progressRegistry.TryBegin(
+                    request.OperationId,
+                    identity!.UserName,
+                    move ? "move" : "copy",
+                    out operation))
+            {
+                return Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict,
+                    title: "操作标识重复",
+                    detail: "该粘贴操作已在进行中，请稍后重试。");
+            }
+        }
+
+        FileHelperResponse response;
+        try
+        {
+            response = await service.ExecuteAsync(
+                NewRequest(identity!, options, move ? "move" : "copy") with
+                {
+                    Sources = sources.ToArray(),
+                    Target = target,
+                    Overwrite = request.Overwrite,
+                    OperationId = operation?.Id,
+                },
+                operation,
+                cancellationToken);
+        }
+        catch
+        {
+            // 未预期异常也要收口登记项，避免其长期停留在「进行中」。
+            operation?.Complete(FileHelperResponse.Failure(FileErrorCodes.IoError, "文件操作异常终止。"));
+            throw;
+        }
+
+        // 取消属于用户主动行为：以 200 + {ok:false,cancelled:true} 返回，
+        // 不与「目标已存在」的 409 覆盖确认混淆。复制若已在取消前完成，仍按成功返回。
+        if (operation is not null)
+        {
+            operation.Complete(response);
+            if (!response.Ok && operation.CancellationRequested)
+            {
+                return Results.Ok(new FileMutationResponse(false, true));
+            }
+        }
+
         return ToResult(response);
     }
+
+    /// <summary>读取复制/移动进度；不属于当前账号或已过期时返回 404。</summary>
+    private static IResult GetTransferProgress(
+        HttpContext context,
+        string operationId,
+        FileSettingsService settingsService,
+        FileTransferProgressRegistry progressRegistry)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (!FileTransferProgressRegistry.IsValidOperationId(operationId) ||
+            !progressRegistry.TryGet(operationId, identity!.UserName, out var operation))
+        {
+            return TransferNotFound();
+        }
+
+        return Results.Ok(operation.Snapshot());
+    }
+
+    /// <summary>取消复制/移动：终止辅助进程；已复制的条目保留，不回滚。</summary>
+    private static IResult CancelTransfer(
+        HttpContext context,
+        string operationId,
+        FileSettingsService settingsService,
+        FileTransferProgressRegistry progressRegistry)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        if (!FileTransferProgressRegistry.IsValidOperationId(operationId) ||
+            !progressRegistry.TryGet(operationId, identity!.UserName, out var operation))
+        {
+            return TransferNotFound();
+        }
+
+        var cancelled = operation.Cancel();
+        return Results.Ok(new FileTransferCancelResponse(true, cancelled, operation.IsCompleted));
+    }
+
+    private static IResult TransferNotFound() =>
+        Results.Problem(
+            statusCode: StatusCodes.Status404NotFound,
+            title: "进度不存在",
+            detail: "该粘贴操作不存在、不属于当前账号或已结束过久。");
 
     private static async Task<IResult> UploadAsync(
         HttpContext context,
@@ -724,6 +827,9 @@ public static class FileEndpoints
             FileErrorCodes.Conflict => StatusCodes.Status409Conflict,
             FileErrorCodes.TooLarge => StatusCodes.Status413PayloadTooLarge,
             FileErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
+            // 正常情况下取消由 TransferAsync 转成 200 {ok:false,cancelled:true}；
+            // 这里仅作兜底，避免误入 409 覆盖确认链路。
+            FileErrorCodes.Cancelled => StatusCodes.Status400BadRequest,
             _ => StatusCodes.Status500InternalServerError,
         };
 
@@ -745,6 +851,7 @@ public static class FileEndpoints
         FileErrorCodes.Conflict => "文件已被修改",
         FileErrorCodes.TooLarge => "文件过大",
         FileErrorCodes.Timeout => "操作超时",
+        FileErrorCodes.Cancelled => "操作已取消",
         _ => "文件操作失败",
     };
 
@@ -767,7 +874,11 @@ public sealed record FileRenameRequest(string? Path, string? NewName);
 
 public sealed record FileDeleteRequest(string[]? Paths, bool Recursive);
 
-public sealed record FileTransferRequest(string[]? Sources, string? Target, bool Overwrite);
+public sealed record FileTransferRequest(
+    string[]? Sources,
+    string? Target,
+    bool Overwrite,
+    string? OperationId = null);
 
 public sealed record FileTextSaveRequest(string? Path, string? Content, long ExpectedModifiedAt, bool HasBom);
 
@@ -779,7 +890,8 @@ public sealed record FileQuickAccessListResponse(FileQuickAccessEntry[] Items);
 
 public sealed record FileQuickAccessAddResponse(bool Ok, bool Created, FileQuickAccessEntry Item);
 
-public sealed record FileMutationResponse(bool Ok);
+/// <summary>文件变更结果；<paramref name="Cancelled"/> 仅在用户取消粘贴时为 true（HTTP 200）。</summary>
+public sealed record FileMutationResponse(bool Ok, bool Cancelled = false);
 
 public sealed record FileTextResponse(string Path, string Content, long ModifiedAt, long Size, bool HasBom);
 

@@ -25,11 +25,15 @@ public static class FileOperations
         UnixFileMode.OtherExecute,
     ];
 
-    /// <summary>执行非下载类操作（列表/新建/重命名/删除/复制/移动/上传）。</summary>
+    /// <summary>
+    /// 执行非下载类操作（列表/新建/重命名/删除/复制/移动/上传）。
+    /// <paramref name="progress"/> 仅复制/移动时使用：把进度帧写入标准输出，主进程据此更新快照。
+    /// </summary>
     public static async Task<FileHelperResponse> ExecuteAsync(
         FileHelperRequest request,
         Stream input,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HelperTransferProgressWriter? progress = null)
     {
         try
         {
@@ -40,8 +44,8 @@ public static class FileOperations
                 "touch" => CreateFile(request),
                 "rename" => Rename(request),
                 "delete" => Delete(request),
-                "copy" => Transfer(request, move: false),
-                "move" => Transfer(request, move: true),
+                "copy" => Transfer(request, move: false, progress),
+                "move" => Transfer(request, move: true, progress),
                 "upload" => await UploadAsync(request, input, cancellationToken),
                 "writetext" => await WriteTextAsync(request, input, cancellationToken),
                 _ => throw new FileOperationException(FileErrorCodes.InvalidPath, "不支持的操作。"),
@@ -278,7 +282,10 @@ public static class FileOperations
         return FileHelperResponse.Success();
     }
 
-    private static FileHelperResponse Transfer(FileHelperRequest request, bool move)
+    private static FileHelperResponse Transfer(
+        FileHelperRequest request,
+        bool move,
+        HelperTransferProgressWriter? progress)
     {
         var sources = request.Sources ?? [];
         if (sources.Length == 0)
@@ -297,6 +304,9 @@ public static class FileOperations
             throw new FileOperationException(FileErrorCodes.NotDirectory, "目标目录不存在。");
         }
 
+        // 第一段：先校验全部源并确定目标路径。统计总进度需要先知道完整清单，
+        // 所有参数错误都在复制任何条目之前暴露。
+        var items = new List<(string Source, string Destination)>(sources.Length);
         foreach (var source in sources.Select(source => RequirePath(request, source)))
         {
             if (!Exists(source))
@@ -321,11 +331,39 @@ public static class FileOperations
                 throw new FileOperationException(FileErrorCodes.InvalidPath, "源与目标相同。");
             }
 
+            items.Add((source, destination));
+        }
+
+        // 第二段：统计每个源的文件数与字节数（符号链接不跟随、按条目计、字节计 0），
+        // 让前端在复制开始前就知道总进度。统计期间上报已扫描数量，前端显示不确定进度。
+        progress?.BeginScanning();
+        var counts = new (long Bytes, int Entries)[items.Count];
+        long bytesTotal = 0;
+        int entriesTotal = 0;
+        int scannedEntries = 0;
+        long scannedBytes = 0;
+        for (var index = 0; index < items.Count; index++)
+        {
+            counts[index] = CountEntry(
+                items[index].Source,
+                ref scannedEntries,
+                ref scannedBytes,
+                progress);
+            bytesTotal += counts[index].Bytes;
+            entriesTotal += counts[index].Entries;
+        }
+
+        progress?.StartTransfer(bytesTotal, entriesTotal);
+
+        // 第三段：逐项删除覆盖目标并复制/移动。
+        for (var index = 0; index < items.Count; index++)
+        {
+            var (source, destination) = items[index];
             if (Exists(destination))
             {
                 if (!request.Overwrite)
                 {
-                    throw new FileOperationException(FileErrorCodes.AlreadyExists, $"目标已存在：{name}");
+                    throw new FileOperationException(FileErrorCodes.AlreadyExists, $"目标已存在：{Path.GetFileName(destination)}");
                 }
 
                 DeleteEntry(destination);
@@ -333,15 +371,75 @@ public static class FileOperations
 
             if (move)
             {
-                MoveEntry(source, destination);
+                MoveEntry(source, destination, counts[index], progress);
             }
             else
             {
-                CopyEntry(source, destination);
+                CopyEntry(source, destination, progress);
             }
         }
 
+        progress?.Done();
         return FileHelperResponse.Success();
+    }
+
+    /// <summary>
+    /// 统计一个源子树中的文件数与字节数（目录本身不计入条目，符号链接按 1 个条目计）。
+    /// 读取文件大小失败时按 0 字节计，避免统计阶段掩盖后续复制的真实错误。
+    /// </summary>
+    private static (long Bytes, int Entries) CountEntry(
+        string path,
+        ref int scannedEntries,
+        ref long scannedBytes,
+        HelperTransferProgressWriter? progress)
+    {
+        long bytes = 0;
+        int entries = 0;
+        AccumulateEntry(path, ref bytes, ref entries, ref scannedEntries, ref scannedBytes, progress);
+        return (bytes, entries);
+    }
+
+    private static void AccumulateEntry(
+        string path,
+        ref long bytes,
+        ref int entries,
+        ref int scannedEntries,
+        ref long scannedBytes,
+        HelperTransferProgressWriter? progress)
+    {
+        if (IsSymlink(path))
+        {
+            entries += 1;
+            scannedEntries += 1;
+            progress?.Scanned(scannedEntries, scannedBytes);
+            return;
+        }
+
+        if (Directory.Exists(path))
+        {
+            foreach (var child in Directory.EnumerateFileSystemEntries(path))
+            {
+                AccumulateEntry(child, ref bytes, ref entries, ref scannedEntries, ref scannedBytes, progress);
+            }
+
+            return;
+        }
+
+        long size = 0;
+        try
+        {
+            size = new FileInfo(path).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 统计阶段按 0 计；复制阶段会给出真实错误。
+        }
+
+        entries += 1;
+        bytes += size;
+        scannedEntries += 1;
+        scannedBytes += size;
+        progress?.Scanned(scannedEntries, scannedBytes);
     }
 
     private static async Task<FileHelperResponse> UploadAsync(
@@ -597,7 +695,10 @@ public static class FileOperations
         return new string(chars);
     }
 
-    private static void CopyEntry(string source, string destination)
+    private static void CopyEntry(
+        string source,
+        string destination,
+        HelperTransferProgressWriter? progress)
     {
         if (IsSymlink(source))
         {
@@ -616,6 +717,7 @@ public static class FileOperations
                 File.CreateSymbolicLink(destination, linkTarget);
             }
 
+            progress?.AddEntry(Path.GetFileName(source), 0);
             return;
         }
 
@@ -624,18 +726,47 @@ public static class FileOperations
             Directory.CreateDirectory(destination);
             foreach (var child in Directory.EnumerateFileSystemEntries(source))
             {
-                CopyEntry(child, Path.Combine(destination, Path.GetFileName(child)));
+                CopyEntry(child, Path.Combine(destination, Path.GetFileName(child)), progress);
             }
 
             TryCopyMode(source, destination);
             return;
         }
 
-        File.Copy(source, destination, overwrite: false);
+        // 用分块流式复制替代 File.Copy：按块累计字节并上报进度。
+        // 完成后仍复制权限位与时间戳，保持与 File.Copy 接近的元数据行为。
+        using (var input = new FileStream(
+            source,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            CopyBufferSize))
+        using (var output = new FileStream(
+            destination,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            CopyBufferSize))
+        {
+            var buffer = new byte[CopyBufferSize];
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, read);
+                progress?.AddBytes(read);
+            }
+        }
+
         TryCopyMode(source, destination);
+        TryCopyTimestamps(source, destination);
+        progress?.AddEntry(Path.GetFileName(source), 0);
     }
 
-    private static void MoveEntry(string source, string destination)
+    private static void MoveEntry(
+        string source,
+        string destination,
+        (long Bytes, int Entries) counts,
+        HelperTransferProgressWriter? progress)
     {
         try
         {
@@ -647,11 +778,14 @@ public static class FileOperations
             {
                 File.Move(source, destination);
             }
+
+            // 同设备移动是常数时间操作，整棵源子树一瞬间完成。
+            progress?.AddCompleted(counts.Bytes, counts.Entries);
         }
         catch (IOException) when (!Exists(destination))
         {
-            // 跨设备（EXDEV）等场景回退为复制 + 删除。
-            CopyEntry(source, destination);
+            // 跨设备（EXDEV）等场景回退为复制 + 删除；复制过程继续上报字节进度。
+            CopyEntry(source, destination, progress);
             DeleteEntry(source);
         }
     }
@@ -679,6 +813,20 @@ public static class FileOperations
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // 权限位复制失败不影响文件内容，忽略。
+        }
+    }
+
+    /// <summary>复制最后修改/访问时间，贴近 File.Copy 的元数据行为；失败不影响内容。</summary>
+    private static void TryCopyTimestamps(string source, string destination)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(destination, File.GetLastWriteTimeUtc(source));
+            File.SetLastAccessTimeUtc(destination, File.GetLastAccessTimeUtc(source));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // 时间戳复制失败属非致命问题，忽略。
         }
     }
 

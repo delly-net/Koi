@@ -58,7 +58,10 @@ single `操作` dropdown per row, so the action column stays narrow. Uploading (
 button accepts multiple files) shows an inline row under the toolbar with
 `正在上传（x/y）文件名` and an `el-progress` percentage bar for the current file; progress comes
 from `XMLHttpRequest.upload.onprogress` in `uploadFile()` (`fetch` cannot report upload progress,
-and the `/api/files/upload` multipart contract is unchanged). Directories are opened by
+and the `/api/files/upload` multipart contract is unchanged). Pasting (`粘贴`, copy or cut-and-paste)
+shows the same style of inline row with the real server-side byte percentage, entry counter and
+current file name, plus a `取消` button; it is driven by `operationId` + progress polling described
+in the file-transfer bullet below. Directories are opened by
 clicking the entry name or choosing `打开`; files listed in the configured text associations are
 opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; other files are
 downloaded via `下载` (double-click no longer opens entries). Non-directory entries whose name ends
@@ -337,7 +340,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   settings → 503; account missing from `getpwnam_r` → 403): `GET /roots`, `GET /list?path=`,
   `POST /mkdir` `{path}`, `POST /touch` `{path}`, `POST /rename` `{path,newName}`,
   `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
-  `{sources,target,overwrite}`, `POST /upload?path=&overwrite=` (multipart field `file`),
+  `{sources,target,overwrite,operationId?}`, `GET /transfer-progress/{operationId}`,
+  `POST /transfer-progress/{operationId}/cancel`, `POST /upload?path=&overwrite=` (multipart field `file`),
   `GET /download?path=`, `GET /text?path=`, `POST /text` `{path,content,expectedModifiedAt,hasBom}`,
   `GET /quick-access`, `POST /quick-access` `{path}`, `DELETE /quick-access/{id}`,
   `GET /settings` and `PUT /settings`
@@ -431,6 +435,30 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   pipe and the operation only "finishes" when the timeout fires (this used to surface as a spurious
   504 when loading directories with a few hundred entries). Upload and download timeouts are
   idle-based and re-armed on every chunk, so a slow but active client is not killed by a wall clock.
+- File transfer progress and cancellation: `copy`/`move` report progress without changing their
+  synchronous POST contract. The client generates an `operationId` (`^[A-Za-z0-9-]{8,64}$`) and
+  sends it in the copy/move body; the helper then writes JSON progress frames
+  (`FileHelperResponse{ok:true,progress:{phase,bytesDone,bytesTotal,entriesDone,entriesTotal,
+  currentName}}`) to stdout **before** the final response frame, throttled to one frame per 200 ms.
+  The main process reads frames in a loop in `FileOperationService.RunAsync`, feeds the
+  `FileTransferProgressRegistry` singleton and only treats the frame without `progress` as the
+  result. Phases are `scanning` (helper first walks the sources to total files/bytes; symlinks count
+  as one entry and zero bytes), `transferring`, `done`, `cancelled` and `failed`. The helper copies
+  files in 80 KiB chunks instead of `File.Copy` so bytes can be counted (mode and timestamps are
+  still copied best-effort); a same-device move credits the whole source subtree at once, and the
+  cross-device fallback keeps reporting while it copies. `GET /api/files/transfer-progress/{id}`
+  returns the snapshot only to the account that started it (anything else, including an expired
+  entry, is 404); entries survive two minutes after completion and are pruned lazily (at most 256).
+  `POST /api/files/transfer-progress/{id}/cancel` marks the operation cancelled and kills the
+  helper process; cancellation is best-effort — already-copied entries and any partially written
+  file stay, overwritten targets are not restored, and a copy that finished first still returns
+  success. A cancelled copy/move returns
+  HTTP 200 with `{ok:false,cancelled:true}` (never 409, so the UI does not mistake it for the
+  overwrite prompt). Without an `operationId` the endpoints behave exactly as before. The file
+  manager sends one for every paste, polls progress every 500 ms, shows an inline row under the
+  toolbar (scanning: indeterminate bar plus scanned count; transferring: byte percentage,
+  `entriesDone/entriesTotal`, current file name, and a `取消` button), stops polling when the POST
+  returns, and best-effort cancels when the inner tab unmounts.
 - Docker management runs the docker CLI from the main process (`Docker/DockerCommandRunner.cs`)
   through `Process.Start` + `ArgumentList` — never a shell, so user input is never concatenated
   into a command line. Only a fixed whitelist of subcommands executes (`ps`, `inspect`, `logs`,
