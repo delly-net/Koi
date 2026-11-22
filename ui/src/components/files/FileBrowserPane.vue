@@ -27,10 +27,10 @@ import {
   createFile,
   deleteEntries,
   getFileTransferProgress,
-  listFiles,
   makeDirectory,
   moveEntries,
   renameEntry,
+  streamListFiles,
   uploadFile,
 } from '@/api/files'
 import { ApiError } from '@/api/http'
@@ -185,24 +185,143 @@ function joinPath(directory: string, name: string): string {
   return directory === '/' ? `/${name}` : `${directory.replace(/\/+$/, '')}/${name}`
 }
 
-/** 返回是否加载成功，供跳转对话框决定要不要关闭。 */
-async function load(path?: string): Promise<boolean> {
-  loading.value = true
-  try {
-    const data = await listFiles(path)
-    currentPath.value = data.path
-    parentPath.value = data.parent
-    entries.value = data.entries
-    truncated.value = data.truncated
-    selection.value = []
-    emit('path-change', data.path)
-    return true
-  } catch (error) {
-    showError(error)
-    return false
-  } finally {
-    loading.value = false
+/** 流式加载状态：SSE 仍在推送条目时为 true，用于显示「已加载 N 项」提示行。 */
+const streaming = ref(false)
+const streamedCount = computed(() => entries.value.length)
+
+/** 当前 SSE 流的关闭函数；同一页签始终只有一个加载在进行。 */
+let closeStream: (() => void) | null = null
+/** 加载令牌：切换目录时旧流的迟到事件必须丢弃。 */
+let loadToken = 0
+/** 当前 load() 的结束回调，被新一次加载取代时按失败结算，避免调用方永远等待。 */
+let activeFinish: ((ok: boolean) => void) | null = null
+/** 待合并的条目缓冲：按帧收集，再在下一帧统一写入表格。 */
+let pendingEntries: FileEntry[] = []
+let flushHandle: number | null = null
+
+function cancelFlush(): void {
+  if (flushHandle !== null) {
+    cancelAnimationFrame(flushHandle)
+    flushHandle = null
   }
+
+  pendingEntries = []
+}
+
+/** 把缓冲条目合并进列表；必须替换数组引用，el-table 才会重新读取数据。 */
+function flushEntries(): void {
+  if (flushHandle !== null) {
+    cancelAnimationFrame(flushHandle)
+    flushHandle = null
+  }
+
+  if (pendingEntries.length === 0) {
+    return
+  }
+
+  const batch = pendingEntries
+  pendingEntries = []
+  entries.value = entries.value.concat(batch)
+}
+
+function scheduleFlush(): void {
+  if (flushHandle !== null) {
+    return
+  }
+
+  flushHandle = requestAnimationFrame(() => {
+    flushHandle = null
+    flushEntries()
+  })
+}
+
+/**
+ * 通过 SSE 加载目录，按帧增量渲染。
+ * 返回是否加载成功，供跳转对话框决定要不要关闭。
+ */
+async function load(path?: string): Promise<boolean> {
+  const token = ++loadToken
+
+  // 结束上一次仍在进行的加载：关闭流并让等待方按失败结算。
+  closeStream?.()
+  closeStream = null
+  cancelFlush()
+  const finishPrevious = activeFinish
+  activeFinish = null
+  finishPrevious?.(false)
+
+  const previous = {
+    path: currentPath.value,
+    parent: parentPath.value,
+    entries: entries.value,
+    truncated: truncated.value,
+  }
+
+  loading.value = true
+  streaming.value = true
+  entries.value = []
+  selection.value = []
+
+  return await new Promise<boolean>((resolve) => {
+    let settled = false
+    const settle = (ok: boolean): void => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      if (activeFinish === settle) {
+        activeFinish = null
+      }
+
+      resolve(ok)
+    }
+
+    activeFinish = settle
+
+    closeStream = streamListFiles(path, {
+      onEntries: (batch) => {
+        if (token !== loadToken) {
+          return
+        }
+
+        pendingEntries.push(...batch)
+        scheduleFlush()
+      },
+      onDone: (data) => {
+        if (token !== loadToken) {
+          return
+        }
+
+        flushEntries()
+        currentPath.value = data.path
+        parentPath.value = data.parent
+        truncated.value = data.truncated
+        loading.value = false
+        streaming.value = false
+        closeStream = null
+        emit('path-change', data.path)
+        settle(true)
+      },
+      onError: (error) => {
+        if (token !== loadToken) {
+          return
+        }
+
+        // 加载失败时恢复加载前的目录与列表，保持当前页签位置不变。
+        cancelFlush()
+        currentPath.value = previous.path
+        parentPath.value = previous.parent
+        entries.value = previous.entries
+        truncated.value = previous.truncated
+        loading.value = false
+        streaming.value = false
+        closeStream = null
+        showError(error)
+        settle(false)
+      },
+    })
+  })
 }
 
 /**
@@ -816,6 +935,14 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  // 关闭页签时终止仍在进行的目录流，并让等待中的调用方结束。
+  closeStream?.()
+  closeStream = null
+  cancelFlush()
+  const finish = activeFinish
+  activeFinish = null
+  finish?.(false)
+
   stopTransferPolling()
   if (transferActive.value && transferOperationId) {
     const operationId = transferOperationId
@@ -884,6 +1011,11 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
 
+        <!-- 流式加载提示：表格按批填充期间保持可见，加载结束后自动隐藏 -->
+        <div v-if="streaming" class="upload-progress" role="status" aria-live="polite">
+          <span class="upload-progress-label">正在加载目录（已加载 {{ streamedCount }} 项）…</span>
+        </div>
+
         <div class="path-bar">
           <el-button text :disabled="!parentPath" @click="parentPath && load(parentPath)">
             上一级
@@ -914,7 +1046,7 @@ onBeforeUnmount(() => {
 
         <div class="table-wrap">
           <el-table
-            v-loading="loading"
+            v-loading="loading && entries.length === 0"
             :data="entries"
             height="100%"
             row-key="path"

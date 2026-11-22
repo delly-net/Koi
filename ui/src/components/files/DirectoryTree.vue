@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { ArrowRight, Folder, Refresh } from '@element-plus/icons-vue'
-import { listFiles } from '@/api/files'
+import { listFilesStreamed } from '@/api/files'
 
 /** 树节点：children 为 null 表示尚未加载，加载后即使为空也保留数组。 */
 interface TreeNode {
@@ -111,7 +111,7 @@ function loadChildren(node: TreeNode): Promise<boolean> {
   node.error = ''
   const task = (async (): Promise<boolean> => {
     try {
-      const data = await listFiles(node.path)
+      const data = await listFilesStreamed(node.path)
       node.children = data.entries
         .filter((entry) => entry.isDirectory)
         .map((entry) => createNode(entry.path, entry.name))

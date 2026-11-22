@@ -65,6 +65,12 @@ public sealed record FileHelperRequest
 
     /// <summary>复制/移动的进度标识；非空时辅助进程在最终响应帧之前写入进度帧。</summary>
     public string? OperationId { get; init; }
+
+    /// <summary>
+    /// 目录列举的流式输出开关：为 true 时辅助进程先收集并排序全部条目，
+    /// 再在最终响应帧之前写入若干分批帧，供主进程转换为 SSE 事件。
+    /// </summary>
+    public bool Stream { get; init; }
 }
 
 /// <summary>目录条目的传输结构。</summary>
@@ -83,6 +89,12 @@ public sealed record FileListPayload(
     string? Parent,
     IReadOnlyList<FileEntryInfo> Entries,
     bool Truncated);
+
+/// <summary>
+/// 目录列表的分批帧：一次携带若干已排序条目。
+/// 只在 <c>list</c> 且请求带 <c>stream=true</c> 时出现，最终帧仍是 <see cref="FileHelperResponse.List"/>。
+/// </summary>
+public sealed record FileListChunkPayload(IReadOnlyList<FileEntryInfo> Entries);
 
 /// <summary>递归扫描得到的图片条目。</summary>
 public sealed record FileImageEntryInfo(
@@ -108,6 +120,12 @@ public sealed record FileHelperResponse
     public string? Message { get; init; }
 
     public FileListPayload? List { get; init; }
+
+    /// <summary>
+    /// 目录列表分批帧：非空表示这是一条中间帧而非最终结果。
+    /// 只在 <c>list</c> 且请求带 <c>stream=true</c> 时出现。
+    /// </summary>
+    public FileListChunkPayload? ListChunk { get; init; }
 
     /// <summary>递归图片扫描结果（仅 <c>imagelist</c> 操作）。</summary>
     public FileImageListPayload? Images { get; init; }

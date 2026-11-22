@@ -307,6 +307,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `processAvailable` / `nginxAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws[?cwd=]`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
+  `GET /api/files/list/stream?path=` (SSE),
   `GET /api/files/images?path=`, `GET /api/files/image?path=&v=`, `GET /api/files/thumbnail?path=&v=`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
   `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET/PUT /api/nginx/settings`,
@@ -345,7 +346,9 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   limited to 255 characters and may not contain `/`. Deletion refuses `/` and configured roots;
   symlinks are deleted/copied as links and never traversed by recursive copy.
 - File API (`/api/files`, session cookie required; non-Linux or `Enabled=false` in the file
-  settings → 503; account missing from `getpwnam_r` → 403): `GET /roots`, `GET /list?path=`,
+  settings → 503; account missing from `getpwnam_r` → 403): `GET /roots`,
+  `GET /list?path=` (single JSON response, kept for compatibility and as the SSE fallback),
+  `GET /list/stream?path=` (SSE, see the streaming bullet below),
   `POST /mkdir` `{path}`, `POST /touch` `{path}`, `POST /rename` `{path,newName}`,
   `POST /delete` `{paths,recursive}`, `POST /copy` / `POST /move`
   `{sources,target,overwrite,operationId?}`, `GET /transfer-progress/{operationId}`,
@@ -469,6 +472,30 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   pipe and the operation only "finishes" when the timeout fires (this used to surface as a spurious
   504 when loading directories with a few hundred entries). Upload and download timeouts are
   idle-based and re-armed on every chunk, so a slow but active client is not killed by a wall clock.
+- Directory listing streams over SSE to avoid large-directory freezes. `GET /api/files/list/stream`
+  runs the same `Guard` + `ValidatePath` checks and performs a main-process existence pre-check for
+  an accurate 400/404 (the real boundary remains the dropped user's permissions); failures before
+  the stream starts are normal ProblemDetails. Once streaming starts the response is
+  `text/event-stream` with `Cache-Control: no-cache, no-store`, `X-Accel-Buffering: no` and response
+  buffering disabled, and events are `start {path,parent}` → one or more `entries {entries}` →
+  `done {path,parent,truncated,total}`; a helper failure after the HTTP 200 is reported as
+  `error {code,status,title,detail}` (status/title use the same mapping as ProblemDetails). Writes
+  are serialized through one `SemaphoreSlim` and a `: ping` comment is sent every 15 s while the
+  helper enumerates. The helper request carries `stream=true`: the `list` operation still enumerates
+  and sorts the complete entry set first (directory-first, ordinal name, order unchanged) and then
+  writes `listChunk` frames of at most 200 entries before the final frame; the main
+  `FileOperationService.ExecuteStreamingAsync` consumes those frames through the existing read
+  loop and forwards them. Only the JSON `/api/files/list` output keeps the entries in the final
+  frame. The client aborts the stream (tab switch/unmount), which cancels the request and kills the
+  helper. On the frontend, `streamListFiles()` in `ui/src/api/files.ts` wraps `EventSource` (a
+  server-sent `error` event is distinguished from a transport error by its `data`); if the
+  connection fails before any event arrives it falls back to the JSON `/api/files/list` request so
+  the real HTTP error is surfaced, and it never auto-reconnects after data has been received.
+  `listFilesStreamed()` collects the events for the directory tree and file picker.
+  `FileBrowserPane` buffers batches and flushes them per animation frame by **replacing** the
+  entries array (el-table watches the array shallowly), shows `正在加载目录（已加载 N 项）…` while
+  streaming, only overlays `v-loading` before the first batch, and restores the previous
+  directory/entries snapshot when the stream fails.
 - File transfer progress and cancellation: `copy`/`move` report progress without changing their
   synchronous POST contract. The client generates an `operationId` (`^[A-Za-z0-9-]{8,64}$`) and
   sends it in the copy/move body; the helper then writes JSON progress frames

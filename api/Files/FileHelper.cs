@@ -109,6 +109,14 @@ public static class FileHelper
                 return;
             }
 
+            // 流式目录列举：先写出若干分批帧，再写最终帧（与复制/移动的进度帧同构）。
+            if (request.Op == "list" && request.Stream)
+            {
+                var response = FileOperations.ListStreaming(request, output);
+                await FileProtocol.WriteResponseHeaderAsync(output, response, CancellationToken.None);
+                return;
+            }
+
             // 缩略图：响应头之后紧跟生成的 PNG 原始字节（与下载相同的分帧方式）。
             if (request.Op == "thumbnail")
             {

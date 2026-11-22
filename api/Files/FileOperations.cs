@@ -141,7 +141,26 @@ public static class FileOperations
         }
     }
 
-    private static FileHelperResponse List(FileHelperRequest request)
+    private static FileHelperResponse List(FileHelperRequest request) =>
+        BuildList(request, onChunk: null);
+
+    /// <summary>
+    /// 流式目录列举：先收集并排序全部条目，再按批把中间帧写入标准输出，
+    /// 最终响应帧只携带路径、父目录与截断标记（条目已通过中间帧下发）。
+    /// </summary>
+    public static FileHelperResponse ListStreaming(FileHelperRequest request, Stream output) =>
+        BuildList(
+            request,
+            chunk => FileProtocol.WriteResponseHeader(
+                output,
+                new FileHelperResponse { Ok = true, ListChunk = new FileListChunkPayload(chunk) }));
+
+    /// <summary>单批下发的条目数：200 条的 JSON 帧远小于响应帧上限。</summary>
+    private const int ListChunkSize = 200;
+
+    private static FileHelperResponse BuildList(
+        FileHelperRequest request,
+        Action<IReadOnlyList<FileEntryInfo>>? onChunk)
     {
         var path = RequirePath(request, request.Path);
         if (!Directory.Exists(path))
@@ -176,10 +195,26 @@ public static class FileOperations
             return string.CompareOrdinal(left.Name, right.Name);
         });
 
+        var parent = Path.GetDirectoryName(path);
+
+        if (onChunk is not null)
+        {
+            for (var offset = 0; offset < entries.Count; offset += ListChunkSize)
+            {
+                onChunk(entries.GetRange(offset, Math.Min(ListChunkSize, entries.Count - offset)));
+            }
+
+            return new FileHelperResponse
+            {
+                Ok = true,
+                List = new FileListPayload(path, parent, Array.Empty<FileEntryInfo>(), truncated),
+            };
+        }
+
         return new FileHelperResponse
         {
             Ok = true,
-            List = new FileListPayload(path, Path.GetDirectoryName(path), entries, truncated),
+            List = new FileListPayload(path, parent, entries, truncated),
         };
     }
 

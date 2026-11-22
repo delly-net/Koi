@@ -34,6 +34,24 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
             operation);
 
     /// <summary>
+    /// 流式目录列表：辅助进程先排序再写出若干分批帧，<paramref name="onChunk"/> 每读到一帧调用一次，
+    /// 最终响应帧作为返回值。回调抛出的取消/IO 异常会终止辅助进程并向上传递。
+    /// </summary>
+    public Task<FileHelperResponse> ExecuteStreamingAsync(
+        FileHelperRequest request,
+        Func<FileListChunkPayload, Task> onChunk,
+        CancellationToken cancellationToken) =>
+        RunAsync(
+            request,
+            uploadContent: null,
+            downloadOutput: null,
+            onDownloadHeader: null,
+            cancellationToken,
+            maxDownloadBytes: null,
+            operation: null,
+            onListChunk: onChunk);
+
+    /// <summary>
     /// 读取在线编辑的文本：以下载模式读取原始字节到内存，超过 <paramref name="maxBytes"/> 时
     /// 立即终止辅助进程并返回 <c>too_large</c>，避免子进程阻塞在写满的管道上。
     /// </summary>
@@ -107,7 +125,8 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         Func<FileHelperResponse, Task>? onDownloadHeader,
         CancellationToken cancellationToken,
         long? maxDownloadBytes = null,
-        FileTransferOperation? operation = null)
+        FileTransferOperation? operation = null,
+        Func<FileListChunkPayload, Task>? onListChunk = null)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -181,6 +200,17 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
                 if (frame.Progress is not null)
                 {
                     operation?.Report(frame.Progress);
+                    continue;
+                }
+
+                // 流式目录列举的分批帧：交给调用方（SSE 端点）实时下发，继续读取直到最终帧。
+                if (frame.ListChunk is not null)
+                {
+                    if (onListChunk is not null)
+                    {
+                        await onListChunk(frame.ListChunk);
+                    }
+
                     continue;
                 }
 

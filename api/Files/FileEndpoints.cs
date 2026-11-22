@@ -1,6 +1,8 @@
 using System.Text;
+using System.Text.Json;
 using Koi.Api.Auth;
 using Koi.Api.Terminal;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace Koi.Api.Files;
 
@@ -34,6 +36,8 @@ public static class FileEndpoints
         group.MapPost("/quick-access", AddQuickAccessAsync);
         group.MapDelete("/quick-access/{id:long}", RemoveQuickAccessAsync);
         group.MapGet("/list", ListAsync);
+        // 目录列表 SSE 流：辅助进程分批写出条目，前端边收边渲染，避免大目录一次性响应造成卡顿。
+        group.MapGet("/list/stream", StreamListAsync);
         // 图片浏览：递归扫描、原图输出与磁盘缓存缩略图（均沿用文件授权与降权辅助进程）。
         group.MapGet("/images", ListImagesAsync);
         group.MapGet("/image", ServeImageAsync);
@@ -241,6 +245,165 @@ public static class FileEndpoints
         var request = NewRequest(identity!, options, "list") with { Path = normalized };
         var response = await service.ExecuteAsync(request, cancellationToken);
         return response.Ok ? Results.Ok(response.List) : ToResult(response);
+    }
+
+    /// <summary>
+    /// 目录列表 SSE 流。流开始前的错误仍返回 ProblemDetails 状态码；
+    /// 流开始后的失败以 <c>error</c> 事件下发（此时 HTTP 状态已经是 200）。
+    /// </summary>
+    private static async Task StreamListAsync(
+        HttpContext context,
+        string? path,
+        FileOperationService service,
+        FileSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            await error.ExecuteAsync(context);
+            return;
+        }
+
+        var target = string.IsNullOrWhiteSpace(path) ? identity!.HomeDirectory : path;
+        if (ValidatePath(target, options, out var normalized) is { } invalid)
+        {
+            await invalid.ExecuteAsync(context);
+            return;
+        }
+
+        // 主进程预检只为给出准确的 400/404；真正的访问边界仍是降权后的用户权限。
+        if (File.Exists(normalized))
+        {
+            await BadRequest("目标不是目录", "目标路径是一个文件，不能作为目录列举。").ExecuteAsync(context);
+            return;
+        }
+
+        if (!Directory.Exists(normalized))
+        {
+            await Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "路径不存在",
+                detail: "目标目录不存在。").ExecuteAsync(context);
+            return;
+        }
+
+        var response = context.Response;
+        response.StatusCode = StatusCodes.Status200OK;
+        response.ContentType = "text/event-stream; charset=utf-8";
+        response.Headers.CacheControl = "no-cache, no-store";
+        // 关闭 nginx 等反向代理的响应缓冲，否则事件会被攒到流结束才到达浏览器。
+        response.Headers["X-Accel-Buffering"] = "no";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+
+        var aborted = context.RequestAborted;
+        using var gate = new SemaphoreSlim(1, 1);
+
+        // 心跳与数据帧共用同一把锁，避免并发写入产生交错的 SSE 帧。
+        async Task WriteRawAsync(string text, CancellationToken token)
+        {
+            var bytes = Encoding.UTF8.GetBytes(text);
+            await gate.WaitAsync(token);
+            try
+            {
+                await response.Body.WriteAsync(bytes, token);
+                await response.Body.FlushAsync(token);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        Task WriteEventAsync(string name, object payload, CancellationToken token) =>
+            WriteRawAsync(
+                $"event: {name}\ndata: {JsonSerializer.Serialize(payload, FileProtocol.Json)}\n\n",
+                token);
+
+        var parent = Path.GetDirectoryName(normalized);
+        await WriteEventAsync("start", new { path = normalized, parent }, aborted);
+
+        // 辅助进程枚举超大目录期间可能长时间没有数据，定期发送注释行保活。
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(aborted);
+        var heartbeat = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(15), heartbeatCts.Token);
+                    await WriteRawAsync(": ping\n\n", heartbeatCts.Token);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+            {
+                // 流结束或客户端断开，心跳自然停止。
+            }
+        });
+
+        FileHelperResponse? result = null;
+        var total = 0;
+        try
+        {
+            var request = NewRequest(identity!, options, "list") with
+            {
+                Path = normalized,
+                Stream = true,
+            };
+
+            result = await service.ExecuteStreamingAsync(
+                request,
+                async chunk =>
+                {
+                    total += chunk.Entries.Count;
+                    await WriteEventAsync("entries", new { entries = chunk.Entries }, aborted);
+                },
+                aborted);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // 客户端断开或写入失败：辅助进程已由 RunAsync 的 finally 终止，安静结束。
+            return;
+        }
+        finally
+        {
+            heartbeatCts.Cancel();
+            await heartbeat;
+        }
+
+        try
+        {
+            if (result.Ok)
+            {
+                await WriteEventAsync(
+                    "done",
+                    new
+                    {
+                        path = result.List?.Path ?? normalized,
+                        parent = result.List?.Parent ?? parent,
+                        truncated = result.List?.Truncated ?? false,
+                        total,
+                    },
+                    aborted);
+                return;
+            }
+
+            await WriteEventAsync(
+                "error",
+                new
+                {
+                    code = result.Code,
+                    status = StatusFor(result.Code),
+                    title = TitleFor(result.Code),
+                    detail = result.Message,
+                },
+                aborted);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
+        {
+            // 客户端已断开，错误无法再下发。
+        }
     }
 
     /// <summary>递归加载目录（含子目录）下的所有图片；数量受 MaxListEntries 限制。</summary>
@@ -987,30 +1150,33 @@ public static class FileEndpoints
             return Results.Ok(new FileMutationResponse(true));
         }
 
-        var status = response.Code switch
-        {
-            FileErrorCodes.InvalidPath => StatusCodes.Status400BadRequest,
-            FileErrorCodes.NotFound => StatusCodes.Status404NotFound,
-            FileErrorCodes.AlreadyExists => StatusCodes.Status409Conflict,
-            FileErrorCodes.PermissionDenied => StatusCodes.Status403Forbidden,
-            FileErrorCodes.IsDirectory => StatusCodes.Status400BadRequest,
-            FileErrorCodes.NotDirectory => StatusCodes.Status400BadRequest,
-            FileErrorCodes.NotEmpty => StatusCodes.Status409Conflict,
-            FileErrorCodes.Conflict => StatusCodes.Status409Conflict,
-            FileErrorCodes.TooLarge => StatusCodes.Status413PayloadTooLarge,
-            FileErrorCodes.UnsupportedImage => StatusCodes.Status415UnsupportedMediaType,
-            FileErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
-            // 正常情况下取消由 TransferAsync 转成 200 {ok:false,cancelled:true}；
-            // 这里仅作兜底，避免误入 409 覆盖确认链路。
-            FileErrorCodes.Cancelled => StatusCodes.Status400BadRequest,
-            _ => StatusCodes.Status500InternalServerError,
-        };
+        var status = StatusFor(response.Code);
 
         return Results.Problem(
             statusCode: status,
             title: TitleFor(response.Code),
             detail: response.Message);
     }
+
+    /// <summary>文件辅助进程错误码到 HTTP 状态的映射（SSE 流内错误事件复用同一口径）。</summary>
+    private static int StatusFor(string? code) => code switch
+    {
+        FileErrorCodes.InvalidPath => StatusCodes.Status400BadRequest,
+        FileErrorCodes.NotFound => StatusCodes.Status404NotFound,
+        FileErrorCodes.AlreadyExists => StatusCodes.Status409Conflict,
+        FileErrorCodes.PermissionDenied => StatusCodes.Status403Forbidden,
+        FileErrorCodes.IsDirectory => StatusCodes.Status400BadRequest,
+        FileErrorCodes.NotDirectory => StatusCodes.Status400BadRequest,
+        FileErrorCodes.NotEmpty => StatusCodes.Status409Conflict,
+        FileErrorCodes.Conflict => StatusCodes.Status409Conflict,
+        FileErrorCodes.TooLarge => StatusCodes.Status413PayloadTooLarge,
+        FileErrorCodes.UnsupportedImage => StatusCodes.Status415UnsupportedMediaType,
+        FileErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
+        // 正常情况下取消由 TransferAsync 转成 200 {ok:false,cancelled:true}；
+        // 这里仅作兜底，避免误入 409 覆盖确认链路。
+        FileErrorCodes.Cancelled => StatusCodes.Status400BadRequest,
+        _ => StatusCodes.Status500InternalServerError,
+    };
 
     private static string TitleFor(string? code) => code switch
     {

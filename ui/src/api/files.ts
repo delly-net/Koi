@@ -182,6 +182,229 @@ export function listFiles(path?: string): Promise<FileListResponse> {
   return request<FileListResponse>(`/api/files/list${query}`)
 }
 
+/** 目录列表 SSE 流的起始事件。 */
+export interface FileListStreamStart {
+  path: string
+  parent: string | null
+}
+
+/** 目录列表 SSE 流的完成事件。 */
+export interface FileListStreamDone extends FileListStreamStart {
+  truncated: boolean
+  total: number
+}
+
+/** 流内错误事件：HTTP 状态已是 200，错误只能通过事件下发。 */
+export interface FileListStreamError {
+  code?: string
+  status?: number
+  title?: string
+  detail?: string
+}
+
+export interface FileListStreamHandlers {
+  onStart?: (payload: FileListStreamStart) => void
+  onEntries: (entries: FileEntry[]) => void
+  onDone: (payload: FileListStreamDone) => void
+  onError: (error: Error) => void
+}
+
+function parseStreamData<T>(event: Event): T | null {
+  const data = (event as MessageEvent<string>).data
+  if (typeof data !== 'string' || data.length === 0) {
+    return null
+  }
+
+  try {
+    return JSON.parse(data) as T
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 打开目录列表 SSE 流（`GET /api/files/list/stream`），返回关闭函数。
+ * 事件顺序为 start → 多个 entries → done；失败以 error 事件下发。
+ * EventSource 拿不到 HTTP 状态码，因此首个事件前连接失败时回退到 JSON 接口以还原真实错误。
+ */
+export function streamListFiles(
+  path: string | undefined,
+  handlers: FileListStreamHandlers,
+): () => void {
+  const query = path ? `?path=${encodePath(path)}` : ''
+  const url = buildApiUrl(`/api/files/list/stream${query}`)
+
+  let source: EventSource | null = null
+  let closed = false
+  let finished = false
+  let received = false
+  let fallbackStarted = false
+
+  const finish = (): void => {
+    closed = true
+    finished = true
+    source?.close()
+    source = null
+  }
+
+  const fail = (error: Error): void => {
+    if (finished) {
+      return
+    }
+
+    finish()
+    handlers.onError(error)
+  }
+
+  // 回退到一次性 JSON 接口：只有还没收到任何 SSE 事件时才允许，避免重复追加条目。
+  const fallback = (): void => {
+    if (finished || fallbackStarted) {
+      return
+    }
+
+    fallbackStarted = true
+    closed = true
+    source?.close()
+    source = null
+
+    listFiles(path).then(
+      (data) => {
+        if (finished) {
+          return
+        }
+
+        finished = true
+        handlers.onStart?.({ path: data.path, parent: data.parent })
+        handlers.onEntries(data.entries)
+        handlers.onDone({
+          path: data.path,
+          parent: data.parent,
+          truncated: data.truncated,
+          total: data.entries.length,
+        })
+      },
+      (error: unknown) => {
+        if (finished) {
+          return
+        }
+
+        finished = true
+        handlers.onError(error instanceof Error ? error : new Error('加载目录失败'))
+      },
+    )
+  }
+
+  const stream = new EventSource(url, { withCredentials: true })
+  source = stream
+
+  stream.addEventListener('start', (event) => {
+    if (closed) {
+      return
+    }
+
+    received = true
+    const payload = parseStreamData<FileListStreamStart>(event)
+    if (payload) {
+      handlers.onStart?.(payload)
+    }
+  })
+
+  stream.addEventListener('entries', (event) => {
+    if (closed) {
+      return
+    }
+
+    received = true
+    const payload = parseStreamData<{ entries: FileEntry[] }>(event)
+    if (!payload) {
+      fail(new Error('目录流数据格式不正确'))
+      return
+    }
+
+    handlers.onEntries(payload.entries ?? [])
+  })
+
+  stream.addEventListener('done', (event) => {
+    if (closed) {
+      return
+    }
+
+    received = true
+    const payload = parseStreamData<FileListStreamDone>(event)
+    if (!payload) {
+      fail(new Error('目录流数据格式不正确'))
+      return
+    }
+
+    finish()
+    handlers.onDone(payload)
+  })
+
+  // 服务端事件名 error 与传输错误事件同名：只有携带 data 的才是流内错误。
+  stream.onerror = (event) => {
+    if (closed) {
+      return
+    }
+
+    const message = event as MessageEvent<string>
+    if (typeof message.data === 'string' && message.data.length > 0) {
+      received = true
+      const payload = parseStreamData<FileListStreamError>(event)
+      fail(
+        new ApiError(
+          payload?.status ?? 0,
+          payload?.title ?? '加载目录失败',
+          payload?.detail,
+        ),
+      )
+      return
+    }
+
+    if (!received) {
+      fallback()
+      return
+    }
+
+    // 已开始接收数据后连接中断：直接报错，避免 EventSource 自动重连导致条目重复追加。
+    fail(new Error('目录加载连接中断，请重试'))
+  }
+
+  return () => {
+    closed = true
+    finished = true
+    source?.close()
+    source = null
+  }
+}
+
+/**
+ * 通过 SSE 收集完整目录列表，供目录树与文件选择器使用；
+ * 传输失败时的 JSON 回退由 {@link streamListFiles} 内部完成。
+ */
+export function listFilesStreamed(path?: string): Promise<FileListResponse> {
+  return new Promise<FileListResponse>((resolve, reject) => {
+    const collected: FileEntry[] = []
+    streamListFiles(path, {
+      onEntries: (entries) => {
+        for (const entry of entries) {
+          collected.push(entry)
+        }
+      },
+      onDone: (payload) => {
+        resolve({
+          path: payload.path,
+          parent: payload.parent,
+          entries: collected,
+          truncated: payload.truncated,
+        })
+      },
+      onError: (error) => {
+        reject(error)
+      },
+    })
+  })
+}
+
 /** 递归列出目录（含子目录）中的图片；不传路径时后端返回登录用户的家目录。 */
 export function listImages(path?: string): Promise<FileImageListResponse> {
   const query = path ? `?path=${encodePath(path)}` : ''

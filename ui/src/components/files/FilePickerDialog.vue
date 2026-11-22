@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { Document, Folder } from '@element-plus/icons-vue'
 import type { FileEntry } from '@/api/files'
-import { listFiles } from '@/api/files'
+import { listFilesStreamed } from '@/api/files'
 import { ApiError } from '@/api/http'
 
 interface Crumb {
@@ -93,7 +93,7 @@ async function load(path?: string): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const data = await listFiles(path)
+    const data = await listFilesStreamed(path)
     currentPath.value = data.path
     parentPath.value = data.parent
     entries.value = data.entries
