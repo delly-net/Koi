@@ -3,12 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type InputInstance } from 'element-plus'
 import {
   CopyDocument,
-  Document,
   DocumentAdd,
-  Folder,
   FolderAdd,
   Monitor,
-  MoreFilled,
   Position,
   Refresh,
   Upload,
@@ -37,6 +34,8 @@ import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
 import { isImageFile } from '@/config/imageTypes'
 import FileSidebar from '@/components/files/FileSidebar.vue'
+import FileTable, { type FileRowAction } from '@/components/files/FileTable.vue'
+import { formatFileSize } from '@/utils/fileFormat'
 import { useEditorStore } from '@/stores/editor'
 import { type FileClipboard, useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
@@ -94,6 +93,8 @@ const uploadIndex = ref(0)
 const uploadTotal = ref(0)
 const selection = ref<FileEntry[]>([])
 const uploadInput = ref<HTMLInputElement | null>(null)
+/** 虚拟表格实例：切换目录时清空其内部勾选状态。 */
+const fileTable = ref<InstanceType<typeof FileTable> | null>(null)
 
 /** 粘贴进度：复制/移动期间显示内联进度行，POST 返回后立即隐藏。 */
 const transferActive = ref(false)
@@ -166,7 +167,7 @@ const transferLabel = computed(() => {
 
   const progress =
     transferBytesTotal.value > 0
-      ? `${formatSize(transferBytesDone.value)} / ${formatSize(transferBytesTotal.value)}`
+      ? `${formatFileSize(transferBytesDone.value)} / ${formatFileSize(transferBytesTotal.value)}`
       : `${transferEntriesDone.value} / ${transferEntriesTotal.value} 项`
   const current = transferCurrentName.value ? ` ${transferCurrentName.value}` : ''
   return `正在${action}（${progress}）${current}`
@@ -208,7 +209,7 @@ function cancelFlush(): void {
   pendingEntries = []
 }
 
-/** 把缓冲条目合并进列表；必须替换数组引用，el-table 才会重新读取数据。 */
+/** 把缓冲条目合并进列表；必须替换数组引用，虚拟表格才会重新读取数据。 */
 function flushEntries(): void {
   if (flushHandle !== null) {
     cancelAnimationFrame(flushHandle)
@@ -261,6 +262,7 @@ async function load(path?: string): Promise<boolean> {
   streaming.value = true
   entries.value = []
   selection.value = []
+  fileTable.value?.clearSelection()
 
   return await new Promise<boolean>((resolve) => {
     let settled = false
@@ -489,21 +491,6 @@ function downloadEntry(row: FileEntry): void {
   link.remove()
 }
 
-/** 行操作菜单命令，与模板中 el-dropdown-item 的 command 一一对应。 */
-type RowAction =
-  | 'open'
-  | 'newtab'
-  | 'terminal'
-  | 'quick'
-  | 'edit'
-  | 'images'
-  | 'run'
-  | 'download'
-  | 'rename'
-  | 'copy'
-  | 'cut'
-  | 'delete'
-
 /**
  * 打开图片浏览：目录行加载该目录（含子目录）；图片文件行加载父目录并定位到该图片。
  * 请求经 imageBrowser store 交给 ImageView，再切换到工作区「图片浏览」标签。
@@ -522,7 +509,7 @@ function browseImages(row: FileEntry): void {
   workspace.open('image')
 }
 
-function onRowAction(command: RowAction, row: FileEntry): void {
+function onRowAction(command: FileRowAction, row: FileEntry): void {
   switch (command) {
     case 'open':
       openEntry(row)
@@ -897,34 +884,6 @@ async function onUploadChange(event: Event): Promise<void> {
   }
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let unitIndex = 0
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024
-    unitIndex += 1
-  }
-
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`
-}
-
-function formatTime(milliseconds: number): string {
-  if (!milliseconds) {
-    return '—'
-  }
-
-  return new Date(milliseconds).toLocaleString('zh-CN', { hour12: false })
-}
-
-function sortByModified(left: FileEntry, right: FileEntry): number {
-  return left.modifiedAt - right.modifiedAt
-}
-
 /** 本页签侧栏的跳转请求直接作用于本页签，隐藏页签保持自己的目录。 */
 function navigateTo(path: string): void {
   void load(path)
@@ -1044,104 +1003,14 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
 
-        <div class="table-wrap">
-          <el-table
-            v-loading="loading && entries.length === 0"
-            :data="entries"
-            height="100%"
-            row-key="path"
+        <div v-loading="loading && entries.length === 0" class="table-wrap">
+          <FileTable
+            ref="fileTable"
+            :entries="entries"
+            @open="openEntry"
+            @action="onRowAction"
             @selection-change="onSelectionChange"
-          >
-            <el-table-column type="selection" width="44" />
-            <el-table-column prop="name" label="名称" min-width="260" sortable>
-              <template #default="{ row }">
-                <span
-                  class="entry"
-                  :class="{ openable: row.isDirectory || isTextFile(row.name) }"
-                  @click.stop="openEntry(row)"
-                >
-                  <el-icon class="entry-icon" :class="{ folder: row.isDirectory }">
-                    <Folder v-if="row.isDirectory" />
-                    <Document v-else />
-                  </el-icon>
-                  <span class="entry-name">{{ row.name }}</span>
-                  <el-tag v-if="row.isSymlink" size="small" type="info" effect="plain">链接</el-tag>
-                </span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="size" label="大小" width="110" sortable>
-              <template #default="{ row }">{{ row.isDirectory ? '—' : formatSize(row.size) }}</template>
-            </el-table-column>
-            <el-table-column
-              prop="modifiedAt"
-              label="修改时间"
-              width="190"
-              sortable
-              :sort-method="sortByModified"
-            >
-              <template #default="{ row }">{{ formatTime(row.modifiedAt) }}</template>
-            </el-table-column>
-            <el-table-column prop="mode" label="权限" width="120" />
-            <el-table-column label="操作" width="96" fixed="right" align="center">
-              <template #default="{ row }">
-                <!-- 阻止冒泡，避免点菜单时触发名称单击打开 -->
-                <div @click.stop>
-                  <el-dropdown
-                    trigger="click"
-                    @command="(command: RowAction) => onRowAction(command, row)"
-                  >
-                    <el-button size="small" :icon="MoreFilled">操作</el-button>
-                    <template #dropdown>
-                      <el-dropdown-menu>
-                        <el-dropdown-item
-                          command="open"
-                          :disabled="!row.isDirectory && !isTextFile(row.name)"
-                        >
-                          打开
-                        </el-dropdown-item>
-                        <el-dropdown-item command="newtab" :disabled="!row.isDirectory">
-                          在新页签打开
-                        </el-dropdown-item>
-                        <el-dropdown-item command="terminal" :disabled="!row.isDirectory">
-                          打开终端
-                        </el-dropdown-item>
-                        <el-dropdown-item command="quick" :disabled="!row.isDirectory">
-                          添加到快速访问
-                        </el-dropdown-item>
-                        <el-dropdown-item
-                          command="edit"
-                          :disabled="row.isDirectory || !isTextFile(row.name)"
-                        >
-                          编辑文本
-                        </el-dropdown-item>
-                        <el-dropdown-item
-                          command="images"
-                          :disabled="!row.isDirectory && !isImageFile(row.name)"
-                        >
-                          浏览图片
-                        </el-dropdown-item>
-                        <el-dropdown-item
-                          v-if="!row.isDirectory && isShellScript(row.name)"
-                          command="run"
-                        >
-                          执行
-                        </el-dropdown-item>
-                        <el-dropdown-item command="download" :disabled="row.isDirectory">
-                          下载
-                        </el-dropdown-item>
-                        <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                        <el-dropdown-item command="copy">复制</el-dropdown-item>
-                        <el-dropdown-item command="cut">剪切</el-dropdown-item>
-                        <el-dropdown-item command="delete" divided class="danger-item">
-                          删除
-                        </el-dropdown-item>
-                      </el-dropdown-menu>
-                    </template>
-                  </el-dropdown>
-                </div>
-              </template>
-            </el-table-column>
-          </el-table>
+          />
         </div>
 
         <div class="status-bar">
@@ -1281,36 +1150,6 @@ onBeforeUnmount(() => {
   border-radius: 6px;
 }
 
-.entry {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  cursor: default;
-}
-
-.entry.openable {
-  cursor: pointer;
-}
-
-.entry.openable:hover .entry-name {
-  color: #409eff;
-  text-decoration: underline;
-}
-
-.entry-icon {
-  color: #909399;
-}
-
-.entry-icon.folder {
-  color: #e6a23c;
-}
-
-.entry-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .status-bar {
   display: flex;
   flex: none;
@@ -1340,10 +1179,5 @@ onBeforeUnmount(() => {
   color: #8a919f;
   font-size: 12px;
   line-height: 1.5;
-}
-
-/* 下拉菜单传送到 body，scoped 样式无法命中，这里用全局选择器标记危险项 */
-:global(.el-dropdown-menu__item.danger-item) {
-  color: #f56c6c;
 }
 </style>

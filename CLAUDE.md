@@ -493,9 +493,24 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   the real HTTP error is surfaced, and it never auto-reconnects after data has been received.
   `listFilesStreamed()` collects the events for the directory tree and file picker.
   `FileBrowserPane` buffers batches and flushes them per animation frame by **replacing** the
-  entries array (el-table watches the array shallowly), shows `正在加载目录（已加载 N 项）…` while
-  streaming, only overlays `v-loading` before the first batch, and restores the previous
-  directory/entries snapshot when the stream fails.
+  entries array (the virtual table re-reads the new array), shows
+  `正在加载目录（已加载 N 项）…` while streaming, only overlays `v-loading` before the first batch,
+  and restores the previous directory/entries snapshot when the stream fails.
+- The file list is a virtual table (`ui/src/components/files/FileTable.vue`): Element Plus
+  `el-table-v2` inside `el-auto-resizer`, so only the visible rows are rendered even for
+  directories with thousands of entries. `el-table-v2`/`el-auto-resizer` are part of the existing
+  full Element Plus registration — no npm dependency is added, and no `/api/files/**` contract
+  changes. Columns are the selection checkbox (44 px, fixed left, with a select-all header
+  checkbox and indeterminate state), name (flex-grow, sortable, click to open), size (110 px,
+  sortable), modified time (190 px, sortable), permissions (120 px) and the row `操作` dropdown
+  (96 px, fixed right, same menu items and disabled rules as before). Selection is kept by path
+  inside `FileTable`, which emits `selection-change`, `open` and `action`; `FileBrowserPane` still
+  owns the business actions and clears the table selection on every load. Sorting is client-side
+  over the loaded entries only: clicking a sortable header cycles ascending → descending → the
+  server order (directories first, name ascending, order unchanged). `v-loading` lives on the
+  `.table-wrap` container before the first batch and the empty state is `el-table-v2`'s built-in
+  one. `ui/src/utils/fileFormat.ts` holds the shared size/time formatters also used by the paste
+  progress line.
 - File transfer progress and cancellation: `copy`/`move` report progress without changing their
   synchronous POST contract. The client generates an `operationId` (`^[A-Za-z0-9-]{8,64}$`) and
   sends it in the copy/move body; the helper then writes JSON progress frames
