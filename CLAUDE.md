@@ -65,7 +65,8 @@ shows the same style of inline row with the real server-side byte percentage, en
 current file name, plus a `取消` button; it is driven by `operationId` + progress polling described
 in the file-transfer bullet below. Directories are opened by
 clicking the entry name or choosing `打开`; files listed in the configured text associations are
-opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; directory rows and
+opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; supported image
+files open in the image browser viewer by clicking the name or choosing `打开`; directory rows and
 image files also offer `浏览图片` (a directory loads that tree, an image file loads its parent
 directory and opens that image in the viewer); other files are
 downloaded via `下载` (double-click no longer opens entries). Non-directory entries whose name ends
@@ -510,7 +511,14 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   server order (directories first, name ascending, order unchanged). `v-loading` lives on the
   `.table-wrap` container before the first batch and the empty state is `el-table-v2`'s built-in
   one. `ui/src/utils/fileFormat.ts` holds the shared size/time formatters also used by the paste
-  progress line.
+  progress line. The name column renders `ui/src/components/files/FileEntryIcon.vue` instead of a
+  plain icon: directories keep the folder icon, image files whose extension can be decoded show a
+  32×32 rounded thumbnail from the same `GET /api/files/thumbnail?path=&v=` endpoint used by the
+  image browser (32×32 `el-image` with `lazy`, so only rendered rows request it and the browser
+  plus backend disk caches are reused), and SVG/AVIF (no server-side thumbnail) plus any failed
+  request fall back to a picture icon. `ui/src/config/imageTypes.ts` therefore also exports
+  `THUMBNAIL_EXTENSIONS` / `hasImageThumbnail()`; the list must stay in sync with
+  `api/Files/ImageFileTypes.cs` (`MimeTypes` and `ThumbnailDecodable`).
 - File transfer progress and cancellation: `copy`/`move` report progress without changing their
   synchronous POST contract. The client generates an `operationId` (`^[A-Za-z0-9-]{8,64}$`) and
   sends it in the copy/move body; the helper then writes JSON progress frames

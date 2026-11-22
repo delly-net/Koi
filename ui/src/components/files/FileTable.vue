@@ -19,8 +19,9 @@ export type FileRowAction =
 import { computed, ref } from 'vue'
 import { TableV2FixedDir } from 'element-plus'
 import type { Column, ColumnSortParams } from 'element-plus'
-import { Document, Folder, MoreFilled } from '@element-plus/icons-vue'
+import { MoreFilled } from '@element-plus/icons-vue'
 import type { FileEntry } from '@/api/files'
+import FileEntryIcon from '@/components/files/FileEntryIcon.vue'
 import { isTextFile } from '@/config/appConfig'
 import { isImageFile } from '@/config/imageTypes'
 import { formatFileSize, formatFileTime } from '@/utils/fileFormat'
@@ -202,13 +203,18 @@ function isShellScript(name: string): boolean {
             <span
               v-else-if="column.key === 'name'"
               class="entry"
-              :class="{ openable: rowData.isDirectory || isTextFile(rowData.name) }"
+              :class="{
+                openable:
+                  rowData.isDirectory || isTextFile(rowData.name) || isImageFile(rowData.name),
+              }"
               @click.stop="openEntry(rowData)"
             >
-              <el-icon class="entry-icon" :class="{ folder: rowData.isDirectory }">
-                <Folder v-if="rowData.isDirectory" />
-                <Document v-else />
-              </el-icon>
+              <FileEntryIcon
+                :name="rowData.name"
+                :path="rowData.path"
+                :is-directory="rowData.isDirectory"
+                :modified-at="rowData.modifiedAt"
+              />
               <span class="entry-name">{{ rowData.name }}</span>
               <el-tag v-if="rowData.isSymlink" size="small" type="info" effect="plain">链接</el-tag>
             </span>
@@ -233,7 +239,11 @@ function isShellScript(name: string): boolean {
                 <el-dropdown-menu>
                   <el-dropdown-item
                     command="open"
-                    :disabled="!rowData.isDirectory && !isTextFile(rowData.name)"
+                    :disabled="
+                      !rowData.isDirectory &&
+                      !isTextFile(rowData.name) &&
+                      !isImageFile(rowData.name)
+                    "
                   >
                     打开
                   </el-dropdown-item>
@@ -317,14 +327,6 @@ function isShellScript(name: string): boolean {
 .entry.openable:hover .entry-name {
   color: #409eff;
   text-decoration: underline;
-}
-
-.entry-icon {
-  color: #909399;
-}
-
-.entry-icon.folder {
-  color: #e6a23c;
 }
 
 .entry-name {

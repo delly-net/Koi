@@ -407,6 +407,12 @@ function openEntry(row: FileEntry): void {
 
   if (isTextFile(row.name)) {
     openTextEditor(row)
+    return
+  }
+
+  // 图片名称与「浏览图片」同一入口：加载父目录并在「图片浏览」查看器中定位该图片。
+  if (isImageFile(row.name)) {
+    browseImages(row)
   }
 }
 
