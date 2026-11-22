@@ -8,6 +8,7 @@ import {
   FolderOpened,
   Goods,
   Monitor,
+  Picture,
   SetUp,
 } from '@element-plus/icons-vue'
 import { useWorkspaceStore, type WorkspaceTabKey } from '@/stores/workspace'
@@ -55,6 +56,12 @@ const MODULE_GROUPS: HomeModuleGroup[] = [
         label: '文本编辑',
         description: '多标签在线编辑 UTF-8 文本文件；通常从文件管理的【编辑文本】或文件名称进入。',
         icon: EditPen,
+      },
+      {
+        key: 'image',
+        label: '图片浏览',
+        description: '按目录递归浏览图片，使用 128×128 缩略图排列，支持全屏缩放、旋转、翻转与上一张/下一张切换。',
+        icon: Picture,
       },
       {
         key: 'service',

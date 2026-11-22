@@ -11,6 +11,7 @@ import { useEditorStore } from '@/stores/editor'
 import { useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
 import { useFilesSidebarLayoutStore } from '@/stores/filesSidebarLayout'
+import { useImageBrowserStore } from '@/stores/imageBrowser'
 import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -50,6 +51,7 @@ export const useAuthStore = defineStore('auth', () => {
       useFilesClipboardStore().reset()
       useFilesQuickAccessStore().reset()
       useFilesSidebarLayoutStore().reset()
+      useImageBrowserStore().reset()
       useTerminalStore().reset()
       useWorkspaceStore().reset()
     } finally {
@@ -66,6 +68,7 @@ export const useAuthStore = defineStore('auth', () => {
       useFilesClipboardStore().reset()
       useFilesQuickAccessStore().reset()
       useFilesSidebarLayoutStore().reset()
+      useImageBrowserStore().reset()
       useTerminalStore().reset()
       // 标签状态随会话结束清空，避免下一个用户看到上一个用户打开的模块。
       useWorkspaceStore().reset()

@@ -1,6 +1,10 @@
 // Unix 权限位 API 只在 Linux 辅助进程中调用；分析器无法跨越进程边界推断平台。
 #pragma warning disable CA1416
 
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Processing;
+
 namespace Koi.Api.Files;
 
 /// <summary>
@@ -11,6 +15,12 @@ public static class FileOperations
 {
     private const int CopyBufferSize = 81920;
     private const int MaxBatchItems = 1000;
+
+    /// <summary>递归图片扫描允许的最大子目录深度。</summary>
+    private const int ImageScanMaxDepth = 16;
+
+    /// <summary>递归图片扫描最多访问的目录条目数，防止超大目录树长时间占用辅助进程。</summary>
+    private const int ImageScanMaxVisitedEntries = 50_000;
 
     private static readonly UnixFileMode[] ModeBits =
     [
@@ -40,6 +50,7 @@ public static class FileOperations
             return request.Op switch
             {
                 "list" => List(request),
+                "imagelist" => ListImages(request),
                 "mkdir" => MakeDirectory(request),
                 "touch" => CreateFile(request),
                 "rename" => Rename(request),
@@ -171,6 +182,252 @@ public static class FileOperations
             List = new FileListPayload(path, Path.GetDirectoryName(path), entries, truncated),
         };
     }
+
+    /// <summary>
+    /// 递归扫描目录下的所有图片。只返回普通文件；符号链接/重解析点（含目录链接）全部跳过，
+    /// 避免环路与越界访问。达到数量、深度或访问条目上限时置 <c>Truncated</c>。
+    /// </summary>
+    private static FileHelperResponse ListImages(FileHelperRequest request)
+    {
+        var path = RequirePath(request, request.Path);
+        if (!Directory.Exists(path))
+        {
+            throw new FileOperationException(
+                File.Exists(path) ? FileErrorCodes.NotDirectory : FileErrorCodes.NotFound,
+                "目标目录不存在。");
+        }
+
+        var limit = Math.Clamp(request.MaxEntries <= 0 ? 5000 : request.MaxEntries, 1, 100_000);
+        var images = new List<FileImageEntryInfo>(Math.Min(limit, 512));
+        var truncated = false;
+        var stopped = false;
+        var visited = 0;
+
+        // 显式栈而非递归，避免极深目录树压爆调用栈。
+        var pending = new Stack<(string Directory, string Relative, int Depth)>();
+        pending.Push((path, string.Empty, 0));
+
+        while (pending.Count > 0 && images.Count < limit && !stopped)
+        {
+            var (directory, relative, depth) = pending.Pop();
+
+            IEnumerator<FileSystemInfo>? enumerator;
+            try
+            {
+                enumerator = new DirectoryInfo(directory).EnumerateFileSystemInfos().GetEnumerator();
+            }
+            catch (Exception ex) when (IsSkippableFileSystemError(ex))
+            {
+                // 单个子目录不可读时跳过，不影响其余目录。
+                continue;
+            }
+
+            using (enumerator)
+            {
+                while (true)
+                {
+                    FileSystemInfo entry;
+                    try
+                    {
+                        if (!enumerator.MoveNext())
+                        {
+                            break;
+                        }
+
+                        entry = enumerator.Current;
+                    }
+                    catch (Exception ex) when (IsSkippableFileSystemError(ex))
+                    {
+                        // 枚举过程中目录被删除或权限变化：结束当前目录。
+                        break;
+                    }
+
+                    visited++;
+                    if (visited > ImageScanMaxVisitedEntries)
+                    {
+                        truncated = true;
+                        stopped = true;
+                        break;
+                    }
+
+                    FileAttributes attributes;
+                    try
+                    {
+                        attributes = entry.Attributes;
+                    }
+                    catch (Exception ex) when (IsSkippableFileSystemError(ex))
+                    {
+                        continue;
+                    }
+
+                    // 跳过符号链接/重解析点（避免环路与越界）以及设备文件。
+                    if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Device)) != 0)
+                    {
+                        continue;
+                    }
+
+                    var name = entry.Name;
+                    var childRelative = relative.Length == 0 ? name : $"{relative}/{name}";
+
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        // 超出深度上限的分支不再深入，但继续扫描其它同级目录。
+                        if (depth >= ImageScanMaxDepth)
+                        {
+                            truncated = true;
+                            continue;
+                        }
+
+                        pending.Push((entry.FullName, childRelative, depth + 1));
+                        continue;
+                    }
+
+                    if (!ImageFileTypes.IsImage(name))
+                    {
+                        continue;
+                    }
+
+                    long size;
+                    long modifiedAt;
+                    try
+                    {
+                        var file = (FileInfo)entry;
+                        size = file.Length;
+                        modifiedAt = new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds();
+                    }
+                    catch (Exception ex) when (IsSkippableFileSystemError(ex))
+                    {
+                        continue;
+                    }
+
+                    images.Add(new FileImageEntryInfo(
+                        name,
+                        entry.FullName,
+                        childRelative,
+                        size,
+                        modifiedAt));
+
+                    if (images.Count >= limit)
+                    {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 排序保证同一目录树的结果稳定，前端翻页顺序可预期。
+        images.Sort((left, right) => string.CompareOrdinal(left.RelativePath, right.RelativePath));
+
+        return new FileHelperResponse
+        {
+            Ok = true,
+            Images = new FileImageListPayload(path, images, truncated),
+        };
+    }
+
+    /// <summary>
+    /// 生成 128×128 以内的 PNG 缩略图。必须在降权后的辅助进程中调用，
+    /// 这样解码用户图片受该用户的文件权限约束。
+    /// </summary>
+    public static FileHelperResponse CreateThumbnail(FileHelperRequest request, out byte[]? content)
+    {
+        content = null;
+
+        try
+        {
+            var path = RequirePath(request, request.Path);
+            if (Directory.Exists(path))
+            {
+                throw new FileOperationException(FileErrorCodes.IsDirectory, "目标是目录，无法生成缩略图。");
+            }
+
+            if (!File.Exists(path))
+            {
+                throw new FileOperationException(FileErrorCodes.NotFound, "文件不存在。");
+            }
+
+            if (!ImageFileTypes.CanThumbnail(path))
+            {
+                throw new FileOperationException(
+                    FileErrorCodes.UnsupportedImage,
+                    "该图片格式不支持生成缩略图。");
+            }
+
+            if ((File.GetAttributes(path) & FileAttributes.Device) != 0)
+            {
+                throw new FileOperationException(
+                    FileErrorCodes.UnsupportedImage,
+                    "设备文件无法生成缩略图。");
+            }
+
+            var file = new FileInfo(path);
+            if (file.Length > ImageFileTypes.MaxThumbnailSourceBytes)
+            {
+                throw new FileOperationException(FileErrorCodes.TooLarge, "图片文件过大，无法生成缩略图。");
+            }
+
+            // 先读图片头判断尺寸，避免超大图像在解码阶段耗尽内存。
+            var imageInfo = Image.Identify(path);
+            if (imageInfo is null)
+            {
+                throw new FileOperationException(FileErrorCodes.UnsupportedImage, "无法识别图片格式。");
+            }
+
+            if ((long)imageInfo.Width * imageInfo.Height > ImageFileTypes.MaxThumbnailSourcePixels)
+            {
+                throw new FileOperationException(FileErrorCodes.TooLarge, "图片像素数过大，无法生成缩略图。");
+            }
+
+            // 动图只取首帧，避免把整段动画解码进内存；AutoOrient 让缩略图方向与浏览器一致。
+            using var image = Image.Load(new DecoderOptions { MaxFrames = 1 }, path);
+            image.Mutate(context => context
+                .AutoOrient()
+                .Resize(new ResizeOptions
+                {
+                    Size = new Size(ImageFileTypes.ThumbnailSize, ImageFileTypes.ThumbnailSize),
+                    Mode = ResizeMode.Max,
+                }));
+
+            using var buffer = new MemoryStream();
+            image.SaveAsPng(buffer);
+            content = buffer.ToArray();
+
+            return new FileHelperResponse
+            {
+                Ok = true,
+                Size = content.LongLength,
+                ModifiedAt = new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds(),
+            };
+        }
+        catch (FileOperationException ex)
+        {
+            return FileHelperResponse.Failure(ex.Code, ex.Message);
+        }
+        catch (UnknownImageFormatException)
+        {
+            return FileHelperResponse.Failure(FileErrorCodes.UnsupportedImage, "该图片格式不支持生成缩略图。");
+        }
+        catch (InvalidImageContentException)
+        {
+            return FileHelperResponse.Failure(FileErrorCodes.UnsupportedImage, "图片内容损坏，无法生成缩略图。");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return FileHelperResponse.Failure(FileErrorCodes.PermissionDenied, "没有读取该图片的权限。");
+        }
+        catch (IOException ex)
+        {
+            return FileHelperResponse.Failure(FileErrorCodes.IoError, ex.Message);
+        }
+    }
+
+    /// <summary>递归枚举时可以安全跳过、不应中止整个扫描的文件系统错误。</summary>
+    private static bool IsSkippableFileSystemError(Exception ex) =>
+        ex is UnauthorizedAccessException
+            or IOException
+            or PathTooLongException
+            or System.Security.SecurityException;
 
     private static FileHelperResponse MakeDirectory(FileHelperRequest request)
     {

@@ -10,18 +10,26 @@ interface Crumb {
   path: string
 }
 
-const props = defineProps<{
-  /** 对话框显隐，配合 v-model 使用。 */
-  modelValue: boolean
-  /** 打开时定位的目录；为空表示登录用户的家目录。 */
-  initialPath?: string
-  /** 登录用户的家目录，用于「家目录」快捷按钮。 */
-  homePath?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    /** 对话框显隐，配合 v-model 使用。 */
+    modelValue: boolean
+    /** 打开时定位的目录；为空表示登录用户的家目录。 */
+    initialPath?: string
+    /** 登录用户的家目录，用于「家目录」快捷按钮。 */
+    homePath?: string
+    /**
+     * 选择模式：`file`（默认）单击文件选中、双击确认；
+     * `directory` 单击目录进入，底部「选择当前目录」回传当前目录。
+     */
+    mode?: 'file' | 'directory'
+  }>(),
+  { mode: 'file' },
+)
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: boolean): void
-  /** 确认选择后回传文件的绝对路径。 */
+  /** 确认选择后回传文件或目录的绝对路径。 */
   (e: 'select', path: string): void
 }>()
 
@@ -115,18 +123,20 @@ function goHome(): void {
   }
 }
 
-/** 单击目录进入；单击文件仅选中，双击文件等同确认。 */
+/** 单击目录进入；文件模式下单击文件仅选中，双击文件等同确认。 */
 function onRowClick(row: FileEntry): void {
   if (row.isDirectory) {
     void load(row.path)
     return
   }
 
-  selected.value = row
+  if (props.mode === 'file') {
+    selected.value = row
+  }
 }
 
 function onRowDblClick(row: FileEntry): void {
-  if (!row.isDirectory) {
+  if (!row.isDirectory && props.mode === 'file') {
     selected.value = row
     confirmSelect()
   }
@@ -137,11 +147,17 @@ function rowClassName({ row }: { row: FileEntry }): string {
 }
 
 function confirmSelect(): void {
-  if (!selected.value || loading.value) {
+  if (loading.value) {
     return
   }
 
-  emit('select', selected.value.path)
+  // 目录模式回传当前目录；文件模式必须已选中文件。
+  const path = props.mode === 'directory' ? currentPath.value : selected.value?.path
+  if (!path) {
+    return
+  }
+
+  emit('select', path)
   emit('update:modelValue', false)
 }
 
@@ -153,7 +169,7 @@ function close(): void {
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="选择文件"
+    :title="mode === 'directory' ? '选择目录' : '选择文件'"
     width="720px"
     top="8vh"
     :close-on-click-modal="false"
@@ -222,8 +238,12 @@ function close(): void {
 
     <template #footer>
       <el-button @click="close">取消</el-button>
-      <el-button type="primary" :disabled="!selected || loading" @click="confirmSelect">
-        选择
+      <el-button
+        type="primary"
+        :disabled="mode === 'directory' ? !currentPath || loading : !selected || loading"
+        @click="confirmSelect"
+      >
+        {{ mode === 'directory' ? '选择当前目录' : '选择' }}
       </el-button>
     </template>
   </el-dialog>

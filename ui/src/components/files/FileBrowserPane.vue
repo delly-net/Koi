@@ -35,10 +35,12 @@ import {
 } from '@/api/files'
 import { ApiError } from '@/api/http'
 import { isTextFile } from '@/config/appConfig'
+import { isImageFile } from '@/config/imageTypes'
 import FileSidebar from '@/components/files/FileSidebar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { type FileClipboard, useFilesClipboardStore } from '@/stores/filesClipboard'
 import { useFilesQuickAccessStore } from '@/stores/filesQuickAccess'
+import { useImageBrowserStore } from '@/stores/imageBrowser'
 import { useTerminalStore } from '@/stores/terminal'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -76,6 +78,7 @@ const editor = useEditorStore()
 const workspace = useWorkspaceStore()
 const filesClipboard = useFilesClipboardStore()
 const filesQuickAccess = useFilesQuickAccessStore()
+const imageBrowser = useImageBrowserStore()
 const terminal = useTerminalStore()
 
 const currentPath = ref('')
@@ -374,12 +377,31 @@ type RowAction =
   | 'terminal'
   | 'quick'
   | 'edit'
+  | 'images'
   | 'run'
   | 'download'
   | 'rename'
   | 'copy'
   | 'cut'
   | 'delete'
+
+/**
+ * 打开图片浏览：目录行加载该目录（含子目录）；图片文件行加载父目录并定位到该图片。
+ * 请求经 imageBrowser store 交给 ImageView，再切换到工作区「图片浏览」标签。
+ */
+function browseImages(row: FileEntry): void {
+  if (row.isDirectory) {
+    imageBrowser.requestDirectory(row.path)
+  } else if (isImageFile(row.name)) {
+    const slash = row.path.lastIndexOf('/')
+    const directory = slash > 0 ? row.path.slice(0, slash) : '/'
+    imageBrowser.requestDirectory(directory, row.path)
+  } else {
+    return
+  }
+
+  workspace.open('image')
+}
 
 function onRowAction(command: RowAction, row: FileEntry): void {
   switch (command) {
@@ -399,6 +421,9 @@ function onRowAction(command: RowAction, row: FileEntry): void {
       break
     case 'edit':
       openTextEditor(row)
+      break
+    case 'images':
+      browseImages(row)
       break
     case 'run':
       runScript(row)
@@ -956,6 +981,12 @@ onBeforeUnmount(() => {
                           :disabled="row.isDirectory || !isTextFile(row.name)"
                         >
                           编辑文本
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          command="images"
+                          :disabled="!row.isDirectory && !isImageFile(row.name)"
+                        >
+                          浏览图片
                         </el-dropdown-item>
                         <el-dropdown-item
                           v-if="!row.isDirectory && isShellScript(row.name)"

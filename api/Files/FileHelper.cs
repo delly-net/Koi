@@ -109,6 +109,20 @@ public static class FileHelper
                 return;
             }
 
+            // 缩略图：响应头之后紧跟生成的 PNG 原始字节（与下载相同的分帧方式）。
+            if (request.Op == "thumbnail")
+            {
+                var response = FileOperations.CreateThumbnail(request, out var content);
+                await FileProtocol.WriteResponseHeaderAsync(output, response, CancellationToken.None);
+                if (response.Ok && content is { Length: > 0 })
+                {
+                    await output.WriteAsync(content, CancellationToken.None);
+                    await output.FlushAsync(CancellationToken.None);
+                }
+
+                return;
+            }
+
             // 复制/移动且请求带进度标识时，在最终响应帧之前写入若干进度帧。
             // 其余操作不产生中间帧，下游读取方仍按「一帧结果」处理。
             HelperTransferProgressWriter? progress = null;

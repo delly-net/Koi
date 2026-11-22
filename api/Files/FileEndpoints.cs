@@ -14,6 +14,12 @@ public static class FileEndpoints
 
     private static readonly byte[] Utf8Bom = [0xEF, 0xBB, 0xBF];
 
+    /// <summary>
+    /// 单次递归图片扫描的条目上限。完整路径与相对路径各可达 4096 字符，
+    /// 2000 条即可保证响应 JSON 帧（上限 32 MiB）不会被撑爆。
+    /// </summary>
+    private const int MaxImageEntriesPerScan = 2000;
+
     public static IEndpointRouteBuilder MapFileEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/files")
@@ -28,6 +34,10 @@ public static class FileEndpoints
         group.MapPost("/quick-access", AddQuickAccessAsync);
         group.MapDelete("/quick-access/{id:long}", RemoveQuickAccessAsync);
         group.MapGet("/list", ListAsync);
+        // 图片浏览：递归扫描、原图输出与磁盘缓存缩略图（均沿用文件授权与降权辅助进程）。
+        group.MapGet("/images", ListImagesAsync);
+        group.MapGet("/image", ServeImageAsync);
+        group.MapGet("/thumbnail", GetThumbnailAsync);
         group.MapPost("/mkdir", MakeDirectoryAsync);
         group.MapPost("/touch", CreateFileAsync);
         group.MapPost("/rename", RenameAsync);
@@ -231,6 +241,168 @@ public static class FileEndpoints
         var request = NewRequest(identity!, options, "list") with { Path = normalized };
         var response = await service.ExecuteAsync(request, cancellationToken);
         return response.Ok ? Results.Ok(response.List) : ToResult(response);
+    }
+
+    /// <summary>递归加载目录（含子目录）下的所有图片；数量受 MaxListEntries 限制。</summary>
+    private static async Task<IResult> ListImagesAsync(
+        HttpContext context,
+        string? path,
+        FileOperationService service,
+        FileSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            return error;
+        }
+
+        var target = string.IsNullOrWhiteSpace(path) ? identity!.HomeDirectory : path;
+        if (ValidatePath(target, options, out var normalized) is { } invalid)
+        {
+            return invalid;
+        }
+
+        var request = NewRequest(identity!, options, "imagelist") with
+        {
+            Path = normalized,
+            MaxEntries = Math.Clamp(
+                Math.Min(options.MaxListEntries, MaxImageEntriesPerScan),
+                1,
+                MaxImageEntriesPerScan),
+        };
+        var response = await service.ExecuteAsync(request, cancellationToken);
+        if (!response.Ok)
+        {
+            return ToResult(response);
+        }
+
+        if (response.Images is null)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "加载失败",
+                detail: "文件辅助进程没有返回图片列表。");
+        }
+
+        return Results.Ok(response.Images);
+    }
+
+    /// <summary>
+    /// 输出图片原图：复用下载流，但设置图片 MIME 与 inline，便于浏览器/查看器直接显示。
+    /// <c>Content-Security-Policy: sandbox</c> 防止同源直接打开 SVG 时执行脚本。
+    /// </summary>
+    private static async Task ServeImageAsync(
+        HttpContext context,
+        string? path,
+        FileOperationService service,
+        FileSettingsService settingsService,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            await error.ExecuteAsync(context);
+            return;
+        }
+
+        if (ValidatePath(path, options, out var normalized) is { } invalid)
+        {
+            await invalid.ExecuteAsync(context);
+            return;
+        }
+
+        var contentType = ImageFileTypes.GetContentType(normalized);
+        if (contentType is null)
+        {
+            await BadRequest("不是图片", "只允许预览受支持的图片文件。").ExecuteAsync(context);
+            return;
+        }
+
+        var request = NewRequest(identity!, options, "download") with { Path = normalized };
+        var response = await service.DownloadAsync(
+            request,
+            header =>
+            {
+                context.Response.ContentType = contentType;
+                context.Response.ContentLength = header.Size ?? 0;
+                context.Response.Headers.ContentDisposition = "inline";
+                context.Response.Headers.CacheControl = "private, max-age=86400";
+                // 同一浏览器切换账号时不得复用上一个会话缓存的图片。
+                context.Response.Headers["Vary"] = "Cookie";
+                context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+                context.Response.Headers["Content-Security-Policy"] = "sandbox";
+                return Task.CompletedTask;
+            },
+            context.Response.Body,
+            cancellationToken);
+
+        if (!response.Ok && !context.Response.HasStarted)
+        {
+            context.Response.Clear();
+            await ToResult(response).ExecuteAsync(context);
+        }
+    }
+
+    /// <summary>
+    /// 输出 128×128 以内的缓存缩略图。首次请求由降权辅助进程生成并落盘，
+    /// 之后直接读取缓存文件，不重复解码原图。
+    /// </summary>
+    private static async Task GetThumbnailAsync(
+        HttpContext context,
+        string? path,
+        string? v,
+        FileOperationService service,
+        FileSettingsService settingsService,
+        ImageThumbnailService thumbnails,
+        CancellationToken cancellationToken)
+    {
+        var options = settingsService.Current;
+        if (Guard(context, options, out var identity) is { } error)
+        {
+            await error.ExecuteAsync(context);
+            return;
+        }
+
+        if (ValidatePath(path, options, out var normalized) is { } invalid)
+        {
+            await invalid.ExecuteAsync(context);
+            return;
+        }
+
+        if (ImageFileTypes.GetContentType(normalized) is null)
+        {
+            await BadRequest("不是图片", "只允许为受支持的图片文件生成缩略图。").ExecuteAsync(context);
+            return;
+        }
+
+        if (!ImageFileTypes.CanThumbnail(normalized))
+        {
+            await Results.Problem(
+                statusCode: StatusCodes.Status415UnsupportedMediaType,
+                title: "无法生成缩略图",
+                detail: "该图片格式不支持生成缩略图，可点击后查看原图。").ExecuteAsync(context);
+            return;
+        }
+
+        // 缓存按登录账号隔离：命中缓存也不能绕过该账号自身的文件读取权限。
+        var cachePath = thumbnails.GetCachePath(normalized, v, identity!.UserName);
+        if (!thumbnails.TryGetCached(cachePath))
+        {
+            var request = NewRequest(identity!, options, "thumbnail") with { Path = normalized };
+            var created = await thumbnails.CreateAsync(request, cachePath, cancellationToken);
+            if (!created.Ok)
+            {
+                await ToResult(created).ExecuteAsync(context);
+                return;
+            }
+        }
+
+        context.Response.Headers.CacheControl = "private, max-age=31536000, immutable";
+        // 同一浏览器切换账号时不得复用上一个会话缓存的缩略图。
+        context.Response.Headers["Vary"] = "Cookie";
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        await Results.File(cachePath, "image/png").ExecuteAsync(context);
     }
 
     private static async Task<IResult> MakeDirectoryAsync(
@@ -826,6 +998,7 @@ public static class FileEndpoints
             FileErrorCodes.NotEmpty => StatusCodes.Status409Conflict,
             FileErrorCodes.Conflict => StatusCodes.Status409Conflict,
             FileErrorCodes.TooLarge => StatusCodes.Status413PayloadTooLarge,
+            FileErrorCodes.UnsupportedImage => StatusCodes.Status415UnsupportedMediaType,
             FileErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
             // 正常情况下取消由 TransferAsync 转成 200 {ok:false,cancelled:true}；
             // 这里仅作兜底，避免误入 409 覆盖确认链路。
@@ -850,6 +1023,7 @@ public static class FileEndpoints
         FileErrorCodes.NotEmpty => "目录非空",
         FileErrorCodes.Conflict => "文件已被修改",
         FileErrorCodes.TooLarge => "文件过大",
+        FileErrorCodes.UnsupportedImage => "无法生成缩略图",
         FileErrorCodes.Timeout => "操作超时",
         FileErrorCodes.Cancelled => "操作已取消",
         _ => "文件操作失败",

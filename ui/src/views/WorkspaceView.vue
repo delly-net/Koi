@@ -14,6 +14,7 @@ import HomeView from '@/views/HomeView.vue'
 import TerminalView from '@/views/TerminalView.vue'
 import FilesView from '@/views/FilesView.vue'
 import EditorView from '@/views/EditorView.vue'
+import ImageView from '@/views/ImageView.vue'
 import DockerView from '@/views/DockerView.vue'
 import ServiceView from '@/views/ServiceView.vue'
 import ProcessView from '@/views/ProcessView.vue'
@@ -99,6 +100,7 @@ async function handleLogout(): Promise<void> {
       />
       <FilesView v-if="hasTab('files')" v-show="activeKey === 'files'" />
       <EditorView v-if="hasTab('editor')" v-show="activeKey === 'editor'" />
+      <ImageView v-if="hasTab('image')" v-show="activeKey === 'image'" />
       <DockerView v-if="hasTab('docker')" v-show="activeKey === 'docker'" />
       <ServiceView v-if="hasTab('service')" v-show="activeKey === 'service'" />
       <ProcessView

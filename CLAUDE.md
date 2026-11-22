@@ -14,14 +14,15 @@ Koi is a Linux web UI ("Koi Linux Web UI"): browser-based administration of a Li
 
 ## Repository state
 
-Both projects are scaffolded, and login, online terminals, file management and online text editing
-are implemented.
+Both projects are scaffolded, and login, online terminals, file management, online text editing
+and recursive image browsing with cached thumbnails are implemented.
 
 - `api/` — ASP.NET Core Minimal API on .NET 10 (`Koi.Api.csproj`): EF Core + SQLite session
   storage, PAM-backed system account authentication, HttpOnly session cookie, health check,
   PTY-backed online terminal over WebSocket, privilege-dropping file management and UTF-8 text
   read/write over REST (file settings stored in the SQLite generic settings table and edited by
-  root through a settings drawer), editor file-type settings that decide which files the file
+  root through a settings drawer), recursive image browsing with ImageSharp-generated 128×128
+  thumbnails cached on disk, editor file-type settings that decide which files the file
   manager opens in the editor and which syntax-highlighting scheme each suffix uses (stored in the
   dedicated SQLite `EditorFileTypes` table, edited by root from the text editor page),
   docker-CLI-backed container/image management restricted to configured
@@ -46,14 +47,15 @@ are implemented.
   multi-tab xterm.js terminal page, a file manager page with a per-account quick-access sidebar
   and a root-only settings drawer, a
   CodeMirror-based multi-tab text editor page with per-suffix syntax highlighting and a root-only
-  suffix/scheme settings drawer, a container manager page, a systemd service manager page, a
+  suffix/scheme settings drawer, a recursive image browser page with 128×128 thumbnail grid and a
+  full-screen zoom/rotate/flip viewer, a container manager page, a systemd service manager page, a
   process manager page with a root-only settings drawer and visible-only polling, an application
   manager page with a live job-log dialog, an Nginx manager page that opens conf.d files in the
   text editor and offers detection/hot-reload actions, and a homepage server-status panel refreshed every 5 seconds.
 - `icon/` — application icons; `ui/public/koi_48.png` is a copy used by the UI.
 
 The file manager keeps directory-level actions in the toolbar and collapses every row operation
-(open / open in new tab / open terminal / edit / run / download / rename / copy / cut / delete) into a
+(open / open in new tab / open terminal / edit / browse images / run / download / rename / copy / cut / delete) into a
 single `操作` dropdown per row, so the action column stays narrow. Uploading (the toolbar `上传`
 button accepts multiple files) shows an inline row under the toolbar with
 `正在上传（x/y）文件名` and an `el-progress` percentage bar for the current file; progress comes
@@ -63,7 +65,9 @@ shows the same style of inline row with the real server-side byte percentage, en
 current file name, plus a `取消` button; it is driven by `operationId` + progress polling described
 in the file-transfer bullet below. Directories are opened by
 clicking the entry name or choosing `打开`; files listed in the configured text associations are
-opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; other files are
+opened in the text editor by clicking the name or choosing `打开` / `编辑文本`; directory rows and
+image files also offer `浏览图片` (a directory loads that tree, an image file loads its parent
+directory and opens that image in the viewer); other files are
 downloaded via `下载` (double-click no longer opens entries). Non-directory entries whose name ends
 with `.sh` (case-insensitive) also offer `执行`: it asks the terminal store for a new tab whose cwd
 is the script's directory and whose one-shot command is `exec sh '<path>'` (POSIX single-quote
@@ -166,7 +170,9 @@ generic settings table (`Feature = files`).
   `Files/` (path validation, settings service/validator, file helper process, operation service,
   per-account quick-access service, REST endpoints),
   `Editor/` (syntax-scheme definitions, file-type service/validator over the `EditorFileTypes`
-  table, read-only associations and root-only settings endpoints),
+  table, read-only associations and root-only settings endpoints), image browsing support in
+  `Files/` (`ImageFileTypes` suffix/MIME rules, recursive `imagelist` and `thumbnail` helper
+  operations, `ImageThumbnailService` disk cache),
   `Docker/` (docker CLI runner, group authorization guard, settings service/validator, REST
   endpoints),
   `Services/` (systemctl/journalctl runner, group authorization guard, settings
@@ -181,16 +187,17 @@ generic settings table (`Feature = files`).
 - `ui/` — frontend. Entry `src/main.ts`; `src/api/` (HTTP wrapper, terminal protocol, file API,
   editor association/settings API, docker API, service API, process API, nginx API and package API
   types), `src/config/`
-  (runtime config, syntax-scheme ids/defaults and the reactive file-type rules), `src/stores/`
-  (Pinia auth, workspace tab, editor tab, file clipboard, per-account quick-access list and
-  terminal-tab request state),
+  (runtime config, syntax-scheme ids/defaults, the reactive file-type rules and the image
+  suffix list), `src/stores/`
+  (Pinia auth, workspace tab, editor tab, file clipboard, per-account quick-access list,
+  terminal-tab request state and image-browser request state),
   `src/router/`,
-  `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / docker /
-  service / process / nginx / package panels),
+  `src/views/` (`WorkspaceView.vue` shell plus the home / terminal / files / editor / image /
+  docker / service / process / nginx / package panels),
   `src/components/terminal/` (xterm.js pane), `src/components/editor/` (`CodeEditor.vue`
   CodeMirror wrapper and the scheme→language mapping), `src/components/files/` (per-directory
-  `FileBrowserPane` used by the file manager's inner tabs plus its per-tab `FileSidebar` and
-  `DirectoryTree`), `src/components/system/`
+  `FileBrowserPane` used by the file manager's inner tabs plus its per-tab `FileSidebar`,
+  `DirectoryTree` and the file/directory picker `FilePickerDialog`), `src/components/system/`
   (`ServerStatus.vue`, the homepage status cards and 5-second polling).
 - `icon/` — application icons (48 / 256 / full size).
 
@@ -300,6 +307,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `fileAvailable` / `dockerAvailable` / `systemMonitorAvailable` / `serviceAvailable` /
   `processAvailable` / `nginxAvailable` / `packageAvailable`), `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`,
   `GET /api/terminal/ws[?cwd=]`, `GET/PUT /api/terminal/settings`, `GET/PUT /api/files/settings`,
+  `GET /api/files/images?path=`, `GET /api/files/image?path=&v=`, `GET /api/files/thumbnail?path=&v=`,
   `GET /api/editor/associations`, `GET/PUT /api/editor/settings`, `GET/PUT /api/services/settings`,
   `GET/PUT /api/docker/settings`, `GET/PUT /api/processes/settings`, `GET/PUT /api/nginx/settings`,
   `GET /api/system/status`,
@@ -360,7 +368,8 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   deliberately skip the `Enabled`/platform checks so a disabled or broken configuration can be
   repaired. Other errors are ProblemDetails: 400 invalid path/request or non-UTF-8 text, 403
   permission or outside roots, 404 missing, 409 conflict (external modification or non-empty
-  directory), 413 too large, 504 helper timeout. Listing is capped by `MaxListEntries` and reports
+  directory), 413 too large, 415 unsupported image format (thumbnail generation), 504 helper
+  timeout. Listing is capped by `MaxListEntries` and reports
   `truncated`. `GET /text` returns `{path,content,modifiedAt,size,hasBom}`; `POST /text` returns
   `{ok,modifiedAt,size}` and maps the helper's `conflict` code to 409.
 - Online text editing is layered on the same helper: `readtext` reuses the download framing
@@ -373,6 +382,31 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `expectedModifiedAt=0` forces an overwrite. The helper writes a temp file in the same directory,
   copies the original Unix mode onto it, then atomically renames it over the target (symlinks are
   resolved and their target is replaced, never the link itself).
+- Image browsing is layered on the same helper and stays inside the `/api/files` group (session +
+  `Guard` + `ValidatePath`, unchanged 401/403/503 semantics). The built-in image suffixes are
+  jpg/jpeg/png/gif/webp/bmp/svg/ico/avif/tif/tiff and must stay in sync between
+  `api/Files/ImageFileTypes.cs` and `ui/src/config/imageTypes.ts`:
+  - `GET /api/files/images?path=` runs the `imagelist` helper operation, which walks the tree
+    iteratively (max depth 16, at most 50 000 visited entries, image count capped by
+    `min(MaxListEntries, 2000)` with a `truncated` flag), skips every reparse point/symlink so it never loops
+    or escapes the selected tree, skips unreadable subdirectories, and returns
+    `{path,images:[{name,path,relativePath,size,modifiedAt}],truncated}` sorted by relative path.
+    It uses `ListTimeoutSeconds`.
+  - `GET /api/files/image?path=&v=` streams the original file through the same download framing
+    with the extension's MIME type, `Content-Disposition: inline`, `Cache-Control: private,
+    max-age=86400`, `Vary: Cookie`, `X-Content-Type-Options: nosniff` and
+    `Content-Security-Policy: sandbox` (so directly opening an SVG cannot run scripts). `v` is
+    only a cache-busting version.
+  - `GET /api/files/thumbnail?path=&v=` runs the `thumbnail` helper operation and serves a PNG no
+    larger than 128×128 (`ResizeMode.Max`, first frame only, source ≤64 MiB and ≤80 MP). The
+    helper returns the PNG bytes and the main process writes them atomically into
+    `<AppContext.BaseDirectory>/thumbnails` keyed by `SHA-256(userName + path)-<v>.png` (per-account,
+    so a cache hit can never bypass another account's file permissions); generation concurrency
+    is capped at 4, and startup prunes entries older than 30 days or beyond 20 000 files. The response is `Cache-Control: private, max-age=31536000,
+    immutable` with `Vary: Cookie` (a shared browser cannot reuse another session's cached
+    thumbnail). SVG/AVIF can be viewed as originals but ImageSharp cannot decode them, so their
+    thumbnail request returns 415 and the UI shows a placeholder. The cache is disposable (delete
+    it freely; it is regenerated). `SixLabors.ImageSharp` 3.1.x is the only added NuGet package.
 - File settings are **not** read from `appsettings.json` (`Koi:Files` was removed): the
   `FileOptions` code defaults are the fallback, and the runtime source is the SQLite generic
   settings table (`Feature = files`) through `FileSettingsService`. `GET/PUT
@@ -829,11 +863,12 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   between the brand area and the tabs with exactly 20px on each side; the top bar therefore has no
   flex `gap` — the divider margins and `.user { margin-left: 16px }` provide the spacing explicitly.
   The `el-tabs` there is navigation only — its panes are
-  empty and `.el-tabs__content` is hidden; the nine modules mount in the sibling `.panels`
+  empty and `.el-tabs__content` is hidden; the ten modules mount in the sibling `.panels`
   container, keyed by `stores/workspace.ts` (`home` / `terminal` / `files` / `editor` /
-  `docker` / `service` / `process` / `nginx` / `package`). `首页` is
-  the fixed entry tab and cannot be closed; the others are opened on demand (home cards, or opening
-  a text file from the file manager) and can be closed, and closing the active tab returns to 首页.
+  `image` / `docker` / `service` / `process` / `nginx` / `package`). `首页` is
+  the fixed entry tab and cannot be closed; the others are opened on demand (home cards, opening
+  a text file from the file manager, or choosing `浏览图片`) and can be closed, and closing the
+  active tab returns to 首页.
   Tab state is in-memory only: it is not reflected in the URL, a browser refresh lands on 首页, and
   logout resets it. A panel is mounted while its key is in `workspace.tabs` (`v-if`) and hidden with
   `v-show` when inactive, so switching tabs preserves module state (terminal WS/PTY, current
@@ -876,7 +911,7 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `:loading` as explicit action feedback. A failed request keeps the last data and shows a
   persistent alert with `重试` instead of a toast. Below it the module entries are split into two
   groups driven by the `MODULE_GROUPS` array in `HomeView.vue`: **系统管理** (terminal / files /
-  editor / service / process / package) and **软件管理** (docker / nginx). Each group renders a
+  editor / image / service / process / package) and **软件管理** (docker / nginx). Each group renders a
   `section.module-group` with an `h2.module-group-title` (3 px primary bar + 16 px text) above its
   `.modules` grid. Each entry is a lightweight tile: a 40 px Element Plus icon above the entry
   name, no border by default and a primary-tinted highlight with a slight lift on hover/focus. The
@@ -955,6 +990,25 @@ TypeScript is pinned to 5.9 because `vue-tsc` 3.x does not yet support TypeScrip
   `@codemirror/lang-yaml`, `@codemirror/lang-xml`, `@codemirror/legacy-modes`) are the only new
   npm dependencies; the `config`/`systemd`/`env` schemes use the legacy Properties mode,
   `shell`/`nginx`/`dockerfile` the matching legacy modes.
+- The 图片浏览 tab (`ui/src/views/ImageView.vue`, workspace key `image`) recursively lists every
+  supported image under the chosen directory through `GET /api/files/images` (home directory on
+  first mount; `打开目录` accepts `/` absolute paths and `~` / `~/...`, with `浏览...` opening
+  `FilePickerDialog` in its `mode="directory"` variant). Tiles are fixed 128×128 placeholders and
+  use `el-image` with `lazy` and `buildThumbnailUrl(path, modifiedAt)`, so the browser, HTTP cache
+  and backend disk cache cooperate; a failed thumbnail (415 for SVG/AVIF, 413 for oversized
+  sources) shows the placeholder icon only, while a failed directory load keeps the previous list
+  and shows a persistent alert with `重试`. Truncated results show a warning alert. Clicking a
+  tile opens a body-teleported full-screen viewer (`role="dialog"`, body scroll locked) with
+  zoom (0.1–8, wheel and buttons), drag panning, 90° rotation, horizontal/vertical flip, reset,
+  previous/next buttons rendered as translucent circular arrows at the left and right edges
+  (disabled at the first/last image), a name + `n / total` + zoom header, and keyboard shortcuts
+  (`Esc`, `←`/`→`, `+`/`-`, `0`, `R`). Cross-tab navigation uses `stores/imageBrowser.ts`
+  (`requestDirectory(directory, selectPath)` / `consume()` / `reset()`): the file manager's
+  `浏览图片` row action asks for a directory or a parent directory plus the selected image, then
+  opens this workspace tab; `ImageView` consumes the request in `setup` or a watcher, loads the
+  list, scrolls the matching tile into view and opens the viewer. Login/logout reset the request
+  store. `FilePickerDialog` keeps its file behaviour by default and, with `mode="directory"`,
+  enters directories on click and returns the current directory via `选择当前目录`.
 - The 容器管理 tab (`ui/src/views/DockerView.vue`, workspace key `docker`) has three inner tabs:
   容器 / 镜像 / 系统. Data is fetched on mount and only on the manual `刷新` button — there is no
   polling timer; refreshing reloads the status plus the visible inner tab. Container rows collapse

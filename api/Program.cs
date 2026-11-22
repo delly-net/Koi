@@ -70,6 +70,8 @@ builder.Services.AddSingleton<FileOperationService>();
 builder.Services.AddSingleton<FileTransferProgressRegistry>();
 // 快速访问目录按登录账号保存在 SQLite 的 FileQuickAccess 表。
 builder.Services.AddSingleton<FileQuickAccessService>();
+// 图片缩略图由降权辅助进程生成，主进程负责磁盘缓存与输出。
+builder.Services.AddSingleton<ImageThumbnailService>();
 // 文本编辑后缀名与着色方案来自 SQLite 独立表 EditorFileTypes（替代旧的 FeatureConfigs 文本扩展名）。
 builder.Services.AddSingleton<EditorFileTypeService>();
 // 容器管理配置来自 SQLite 通用配置表（FeatureConfigs），不再读取 appsettings.json。
@@ -171,6 +173,9 @@ await app.Services.GetRequiredService<ProcessSettingsService>().LoadAsync();
 
 // Nginx 管理配置在启动时加载；数据库无记录时直接使用代码默认值（不读取旧 Koi:Nginx 节）。
 await app.Services.GetRequiredService<NginxSettingsService>().LoadAsync();
+
+// 缩略图缓存是纯缓存：启动时尽力清理过期与超出上限的文件，失败只记日志。
+app.Services.GetRequiredService<ImageThumbnailService>().PruneOldEntries();
 
 // 反向代理（Nginx 等）终止 TLS 时，恢复原始协议与来源地址。
 app.UseForwardedHeaders(new ForwardedHeadersOptions

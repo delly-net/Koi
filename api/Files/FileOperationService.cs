@@ -54,6 +54,27 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         return (response, response.Ok ? buffer.ToArray() : null);
     }
 
+    /// <summary>
+    /// 读取辅助进程生成的 PNG 缩略图：与在线文本读取相同，以下载模式把字节读入内存，
+    /// 超过 <paramref name="maxBytes"/> 时终止辅助进程，避免管道阻塞。
+    /// </summary>
+    public async Task<(FileHelperResponse Response, byte[]? Content)> ReadThumbnailAsync(
+        FileHelperRequest request,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        using var buffer = new MemoryStream();
+        var response = await RunAsync(
+            request,
+            uploadContent: null,
+            downloadOutput: buffer,
+            onDownloadHeader: null,
+            cancellationToken,
+            maxDownloadBytes: maxBytes);
+
+        return (response, response.Ok ? buffer.ToArray() : null);
+    }
+
     /// <summary>保存在线编辑的文本：请求头之后把内容以原始字节写入辅助进程标准输入。</summary>
     public Task<FileHelperResponse> SaveTextAsync(
         FileHelperRequest request,
@@ -282,7 +303,7 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
         var name = OperationName(request.Op);
         return request.Op switch
         {
-            "list" => OperationPolicy.CreateAbsolute(
+            "list" or "imagelist" => OperationPolicy.CreateAbsolute(
                 name,
                 files.ListTimeoutSeconds,
                 fallbackSeconds: 300,
@@ -308,6 +329,8 @@ public sealed class FileOperationService(FileSettingsService settings, ILogger<F
     private static string OperationName(string operation) => operation switch
     {
         "list" => "加载目录",
+        "imagelist" => "扫描图片",
+        "thumbnail" => "生成缩略图",
         "mkdir" => "新建目录",
         "touch" => "新建文件",
         "rename" => "重命名",

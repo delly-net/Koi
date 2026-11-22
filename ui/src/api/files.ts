@@ -51,6 +51,23 @@ export interface FileMutationResponse {
   cancelled?: boolean
 }
 
+/** 递归图片扫描结果条目（相对路径用于展示与排序）。 */
+export interface FileImageEntry {
+  name: string
+  path: string
+  relativePath: string
+  size: number
+  /** 修改时间（Unix 毫秒）；同时作为缩略图/原图的缓存版本号。 */
+  modifiedAt: number
+}
+
+export interface FileImageListResponse {
+  path: string
+  images: FileImageEntry[]
+  /** 达到数量、深度或访问条目上限时为 true。 */
+  truncated: boolean
+}
+
 /** 复制/移动的进度阶段：统计 → 复制/移动 → 完成/取消/失败。 */
 export type FileTransferPhase = 'scanning' | 'transferring' | 'done' | 'cancelled' | 'failed'
 
@@ -163,6 +180,24 @@ export function removeFileQuickAccess(id: number): Promise<FileMutationResponse>
 export function listFiles(path?: string): Promise<FileListResponse> {
   const query = path ? `?path=${encodePath(path)}` : ''
   return request<FileListResponse>(`/api/files/list${query}`)
+}
+
+/** 递归列出目录（含子目录）中的图片；不传路径时后端返回登录用户的家目录。 */
+export function listImages(path?: string): Promise<FileImageListResponse> {
+  const query = path ? `?path=${encodePath(path)}` : ''
+  return request<FileImageListResponse>(`/api/files/images${query}`)
+}
+
+/** 原图地址：浏览器/查看器直接加载，会话 Cookie 随同源请求携带。 */
+export function buildImageUrl(path: string, modifiedAt: number): string {
+  const version = Number.isFinite(modifiedAt) ? Math.max(0, Math.trunc(modifiedAt)) : 0
+  return buildApiUrl(`/api/files/image?path=${encodePath(path)}&v=${version}`)
+}
+
+/** 128×128 缩略图地址；版本号让图片修改后自动绕过浏览器与后端旧缓存。 */
+export function buildThumbnailUrl(path: string, modifiedAt: number): string {
+  const version = Number.isFinite(modifiedAt) ? Math.max(0, Math.trunc(modifiedAt)) : 0
+  return buildApiUrl(`/api/files/thumbnail?path=${encodePath(path)}&v=${version}`)
 }
 
 export function makeDirectory(path: string): Promise<FileMutationResponse> {

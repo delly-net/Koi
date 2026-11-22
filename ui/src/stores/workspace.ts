@@ -7,6 +7,7 @@ export type WorkspaceTabKey =
   | 'terminal'
   | 'files'
   | 'editor'
+  | 'image'
   | 'docker'
   | 'service'
   | 'process'
@@ -19,6 +20,7 @@ export const WORKSPACE_TAB_TITLES: Record<WorkspaceTabKey, string> = {
   terminal: '终端',
   files: '文件管理',
   editor: '文本编辑',
+  image: '图片浏览',
   docker: '容器管理',
   service: '服务管理',
   process: '进程管理',

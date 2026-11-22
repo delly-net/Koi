@@ -19,6 +19,9 @@ public static class FileErrorCodes
     public const string HelperFailed = "helper_failed";
     public const string Timeout = "timeout";
 
+    /// <summary>图片格式无法解码（损坏或 ImageSharp 不支持）。</summary>
+    public const string UnsupportedImage = "unsupported_image";
+
     /// <summary>复制/移动被用户取消（辅助进程已终止）。</summary>
     public const string Cancelled = "cancelled";
 }
@@ -81,6 +84,20 @@ public sealed record FileListPayload(
     IReadOnlyList<FileEntryInfo> Entries,
     bool Truncated);
 
+/// <summary>递归扫描得到的图片条目。</summary>
+public sealed record FileImageEntryInfo(
+    string Name,
+    string Path,
+    string RelativePath,
+    long Size,
+    long ModifiedAt);
+
+/// <summary>目录递归图片列表负载；<c>Truncated</c> 表示达到数量、深度或访问条目上限。</summary>
+public sealed record FileImageListPayload(
+    string Path,
+    IReadOnlyList<FileImageEntryInfo> Images,
+    bool Truncated);
+
 /// <summary>辅助进程 → 主进程的响应头（下载操作后紧跟原始文件字节）。</summary>
 public sealed record FileHelperResponse
 {
@@ -91,6 +108,9 @@ public sealed record FileHelperResponse
     public string? Message { get; init; }
 
     public FileListPayload? List { get; init; }
+
+    /// <summary>递归图片扫描结果（仅 <c>imagelist</c> 操作）。</summary>
+    public FileImageListPayload? Images { get; init; }
 
     public long? Size { get; init; }
 

@@ -23,10 +23,10 @@
 
 Koi turns a Linux host into a workstation you can drive from a browser. Users sign in with their
 **existing system account** — credentials are verified through PAM, so there is no separate user
-database to maintain — and land in a single workspace with nine modules:
+database to maintain — and land in a single workspace with ten modules:
 
 - a **home dashboard** with live CPU, memory, disk and network metrics;
-- **online terminals**, a **file manager** and a **multi-file text editor**;
+- **online terminals**, a **file manager**, a **multi-file text editor** and an **image browser**;
 - **systemd service**, **process**, **application**, **container** and **Nginx configuration**
   management.
 
@@ -41,9 +41,9 @@ software: a logged-in session is equivalent to a shell on the host as that user.
 
 - **System account authentication** — passwords are verified by `pam_unix`; no local password
   store, no duplicate accounts.
-- **Single-page workspace** — Home, terminal, files, editor, services, processes, applications,
-  containers and Nginx tabs keep their state while hidden; closing a tab releases the resources
-  behind it.
+- **Single-page workspace** — Home, terminal, files, editor, images, services, processes,
+  applications, containers and Nginx tabs keep their state while hidden; closing a tab releases
+  the resources behind it.
 - **Multiple online terminals** — each tab owns an independent PTY and shell session; tabs stay
   alive while you switch around the workspace and are torn down when closed. Directories can be
   opened in a new terminal tab from the file manager, with the shell starting in that directory.
@@ -54,6 +54,11 @@ software: a logged-in session is equivalent to a shell on the host as that user.
 - **Online text editing** — multiple files open at once in a CodeMirror-based editor, UTF-8 with
   optional BOM preserved, syntax highlighting chosen per file extension, and optimistic
   concurrency on save: if the file changed on disk, the editor offers overwrite or reload.
+- **Image browsing** — recursively lists every supported image under a directory (including
+  subdirectories), renders backend-generated 128×128 thumbnails in a fixed grid, and opens a
+  full-screen viewer with zoom, drag panning, rotation, horizontal/vertical flip and
+  previous/next buttons at the screen edges. Thumbnails are cached on disk and regenerated when
+  the image changes.
 - **Service management** — list, inspect and control systemd services (`start` / `stop` /
   `restart` / `reload`), manage boot enablement, and read `journalctl` logs.
 - **Process management** — inspect `/proc`-backed CPU/memory usage and command lines, view process
@@ -78,6 +83,7 @@ software: a logged-in session is equivalent to a shell on the host as that user.
 | Online terminal | PTY-backed shells running as the signed-in account | Any signed-in account |
 | File manager | Directory browsing and file operations as the signed-in account | Any signed-in account (bounded by OS permissions) |
 | Text editor | UTF-8 text editing, including Nginx config files | Any signed-in account; Nginx config tabs follow Nginx authorization |
+| Image browser | Recursive image listing, cached 128×128 thumbnails and a full-screen viewer | Any signed-in account (bounded by OS permissions) |
 | Service manager | `systemctl` / `journalctl` | root or a member of the configured groups (default `sudo`, `wheel`) |
 | Process manager | `/proc` inspection and signals | root or `sudo` / `wheel` |
 | Application manager | Package manager CLI | root or `sudo` / `wheel`; changes also require the Koi service itself to run as root |
